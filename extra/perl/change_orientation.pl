@@ -8,12 +8,12 @@ $overwrite_for = 1;
 $overwrite_study = 1;
 $overwrite_series = 1;
 $dob_empty = 0;
-$sex_empty = 0;a
+$sex_empty = 0;
 
 # Set to 1 if you are only converting a plan object, to keep the
 # existing referenced structure set
-#$keep_referenced_uid = 0;
 $keep_referenced_uid = 0;
+#$keep_referenced_uid = 1;
 
 #$dicom_dir = "/PHShome/gcs6/conquest-1.4.17/data/LPcom_H2Oart";
 #$dicom_dir = "/PHShome/gcs6/conquest-1.4.17/data/LPcom_H2Oart";
@@ -35,15 +35,19 @@ $keep_referenced_uid = 0;
 #$dicom_dir = "/PHShome/gcs6/shared/ben-1/PLOGOS_PPS_VarG_50bms_0_5GP";
 #$dicom_dir = "/PHShome/gcs6/shared/ben-1/PLOGOS_PPS_VarG_50bms_0_1GP_PPS_0";
 #$dicom_dir = "/PHShome/gcs6/shared/ben-1/GBDAY_02";
+#$dicom_dir = "/PHShome/gcs6/shared/ben-1/GBDAY_03";
 #$dicom_dir = "/PHShome/gcs6/shared/ben-1/1";
-
+#$dicom_dir = "/PHShome/gcs6/shared/reorient/390-06-51";
+#$dicom_dir = "/home/gcs6/shared/ben-1/Plan_V7_658";
+#$dicom_dir = "/home/gcs6/shared/ben-1/new-mimi";
+#$dicom_dir = "/home/gcs6/shared/ben-1/LPcom_2";
+$dicom_dir = "/home/gcs6/shared/ben-1/GBTEST_01-HFS";
 
 $new_name = "";
 $new_id = "";
 $new_birth_date = "";
 $new_sex = "";
 $new_series_description = "";
-
 
 # $new_name = "LPcom_01^PBS";
 # $new_id = "LPcom_01";
@@ -137,10 +141,14 @@ $new_series_description = "";
 # $new_id = "019-01-11";
 # $new_birth_date = "20190111";
 # $new_sex = "O";
- $new_name = "GBTEST_01^PBS";
- $new_id = "GBTEST_01";
- $new_birth_date = "20200101";
- $new_sex = "O";
+ # $new_name = "GBTEST_01^PBS";
+ # $new_id = "GBTEST_01";
+ # $new_birth_date = "20200101";
+ # $new_sex = "O";
+$new_name = "GBTEST_01^PBS";
+$new_id = "GBTEST_01";
+$new_birth_date = "20200101";
+$new_sex = "O";
 
 #$new_series_description = "Sex empty";
 #$new_series_description = "Control";
@@ -173,16 +181,28 @@ $new_series_description = "";
 #$new_series_description = "Script 2023-07-18";
 #$new_series_description = "Two beams";
 #$new_series_description = "Five beams";
-$new_series_description = "Off-axis W-L";
+#$new_series_description = "Off-axis W-L";
+#$new_series_description = "Shifted image";
+#$new_series_description = "ScanDose 2";
 
 $new_patient_position = "";
 $new_image_orientation = "";
 
-#$new_patient_position = "FFS";
-#$new_image_orientation = "-1\\0\\0\\0\\-1\\0";
+$new_patient_position = "HFS";
+$new_image_orientation = "1\\0\\0\\0\\1\\0";
+$new_series_description = "HFS C0";
 
-#$new_patient_position = "HFP";
-#$new_image_orientation = "-1\\0\\0\\0\\-1\\0";
+# $new_patient_position = "FFP";
+# $new_image_orientation = "1\\0\\0\\0\\-1\\0";
+# $new_series_description = "FFP C0";
+
+# $new_patient_position = "FFS";
+# $new_image_orientation = "-1\\0\\0\\0\\1\\0";
+# $new_series_description = "FFS C0";
+
+# $new_patient_position = "HFP";
+# $new_image_orientation = "-1\\0\\0\\0\\-1\\0";
+# $new_series_description = "HFP C0";
 
 if ($dob_empty) {
     $new_birth_date = "";
@@ -193,9 +213,10 @@ if ($sex_empty) {
 
 #######################################################################################
 
-$dcmdir = "/PHShome/gcs6/shared/ben-1/out";
+$base_dir = "/home/gcs6/shared/ben-1";
+$dcmdir = "${base_dir}/out";
 #$dcmdir = "/home/gcs6/shared/gb-ray/out";
-$txtdir = "/PHShome/gcs6/shared/ben-1/txt";
+$txtdir = "${base_dir}/txt";
 (not -d $dcmdir) and mkdir "$dcmdir";
 (not -d $txtdir) and mkdir "$txtdir";
 
@@ -224,6 +245,12 @@ sub get_value {
 sub reorient {
     my ($x, $y, $z) = @_;
 
+    return ($x, $y, $z);
+#    return (-$x, -$y, $z);   # HFP
+#    return (-$x, $y, -$z);   # FFS
+#    return ($x, -$y, -$z);   # FFP
+
+#   return ($x + 50, $y + 100, $z + 200);
 #    return ($x + 0.06, $y - 1.5, $z + 355.4);
 #    return ($x - 0.91, $y + 61.17 - 6.8, $z - 9.88);
 #    return ($x + 0.79, $y + 70.97, $z + 499.39);
@@ -232,20 +259,23 @@ sub reorient {
 #    return ($x + 0.800000, $y - 3.900000, $z + 499.399994);
 #    return ($x + 0.34, $y - 1.24, $z + 500.61);
 #    return ($x - 0.38, $y - 3.88, $z + 90);
-    return ($x, $y, $z);
 #    return (-$x + 30, -$y + 60, $z + 90);
 }
 
 sub change_isocenter {
     my ($x, $y, $z) = @_;
 
+    return ($x, $y, $z);
+#    return (-$x, -$y, $z);   # HFP
+#    return (-$x, $y, -$z);   # FFS
+#    return ($x, -$y, -$z);   # FFP
+    
+#    return (49.68, 101.76, 201.03);
 #    return (10, -14, 485);
 #    return (0, 0, 1000);
 #    return (10, 20, 30 - 10);
-#    return (-$x, -$y, $z);
 #    return (0, 0, 0);
 #    return (30, 60, 90);
-    return ($x, $y, $z);
 }
 
 sub process_file {
