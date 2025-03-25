@@ -32,7 +32,7 @@ Plastimatch >= 1.9.3-483d43ee (2022-05-24)
   Microsoft Windows 7 SP1           Visual Studio 2015 (for CUDA 8)
   Ubuntu 16.04.7                    gcc 5.3.1; clang 3.8; cmake 3.5.1;
   	 			    dcmtk 3.6.1; itk 4.9.0
-  Debian 11 "Stretch"               gcc 10.2.1; clang 11.0.1; cmake 3.18.4;
+  Debian 11 "Bullseye"              gcc 10.2.1; clang 11.0.1; cmake 3.18.4;
   	    			    dcmtk 3.6.5; itk 4.13.3
   OSX                               Not supported
 
