@@ -21,7 +21,8 @@ Supported hosts:
   Debian 11 "Bullseye"              gcc 10.2.0; clang 11.0.1; cmake 3.18.4
   	 			    dcmtk 3.6.5; itk 4.13
   Fedora 40                         gcc 14.0.1; clang 18.1.8; cmake 3.28.2
-  	 			    dcmtk 3.6.7; itk 4.13.3
+  	 			    dcmtk 3.6.7; ITK on fedora is
+				    hopelessly broken -- build from source
   OSX                               Not supported
 
 
