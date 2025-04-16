@@ -52,8 +52,6 @@ set (PLMREGISTER_LIBRARY_SRC
   itk_demons_util.cxx itk_demons_util.h
   itk_diff_demons.cxx itk_diff_demons.h
   itk_fsf_demons.cxx itk_fsf_demons.h
-  itk_log_demons.cxx itk_log_demons.h
-  itk_sym_log_demons.cxx itk_sym_log_demons.h
   itk_optimizer.cxx itk_optimizer.h
   itk_registration.cxx itk_registration.h
   itk_registration_observer.cxx itk_registration_private.h
@@ -79,7 +77,15 @@ set (PLMREGISTER_LIBRARY_SRC
   translation_grid_search.cxx translation_grid_search.h 
   translation_mi.cxx translation_mi.h 
   translation_mse.cxx translation_mse.h 
-  )
+)
+
+if (NOT PLM_USE_NEW_ITK_DEMONS)
+set (PLMREGISTER_LIBRARY_SRC
+  ${PLMREGISTER_LIBRARY_SRC}
+  itk_log_demons.cxx itk_log_demons.h
+  itk_sym_log_demons.cxx itk_sym_log_demons.h
+)
+endif ()
 
 if (OpenCL_FOUND)
   set (PLMREGISTER_LIBRARY_SRC

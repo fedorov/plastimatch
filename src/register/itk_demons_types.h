@@ -8,27 +8,25 @@
 #include "itk_image_type.h"
 
 #if PLM_USE_NEW_ITK_DEMONS
-#include "itkLogDomainDemonsRegistrationWithMaskFilter.h"
-#include "itkSymmetricLogDomainDemonsRegistrationWithMaskFilter.h"
+#include "itkPDEDeformableRegistrationFilter.h"
+#include "itkPDEDeformableRegistrationFunction.h"
 #else
 #include "itkLogDomainDemonsRegistrationFilterWithMaskExtension.h"
 #include "itkSymmetricLogDomainDemonsRegistrationFilterWithMaskExtension.h"
-#endif
 #include "itkPDEDeformableRegistrationWithMaskFilter.h"
+#endif
 
+#if PLM_USE_NEW_ITK_DEMONS
+typedef itk::PDEDeformableRegistrationFilter<
+    FloatImageType,
+    FloatImageType,DeformationFieldType>  PDEDeformableRegistrationFilterType;
+typedef itk::PDEDeformableRegistrationFunction<
+    FloatImageType,
+    FloatImageType,DeformationFieldType>  PDEDeformableRegistrationFunctionType;
+#else
 typedef itk::PDEDeformableRegistrationWithMaskFilter<
     FloatImageType,
     FloatImageType,DeformationFieldType>  PDEDeformableRegistrationFilterType;
-#if PLM_USE_NEW_ITK_DEMONS
-typedef itk::LogDomainDemonsRegistrationWithMaskFilter<
-    FloatImageType,
-    FloatImageType,
-    DeformationFieldType> LogDomainDemonsFilterType;
-typedef itk::SymmetricLogDomainDemonsRegistrationWithMaskFilter<
-    FloatImageType,
-    FloatImageType,
-    DeformationFieldType> SymmetricLogDomainDemonsFilterType;
-#else
 typedef itk::LogDomainDemonsRegistrationFilterWithMaskExtension<
     FloatImageType,
     FloatImageType,

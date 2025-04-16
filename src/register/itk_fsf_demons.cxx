@@ -20,7 +20,11 @@
 #include "registration_data.h"
 #include "stage_parms.h"
 #include "xform.h"
+#if PLM_USE_NEW_ITK_DEMONS
+#include "itkESMDemonsRegistrationFunction.h"
+#else
 #include "itkESMDemonsRegistrationWithMaskFunction.h"
+#endif
 
 
 itk_fsf_demons_filter::itk_fsf_demons_filter()

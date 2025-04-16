@@ -4,7 +4,11 @@
 #ifndef _itk_fsf_demons_h_
 #define _itk_fsf_demons_h_
 
+#if PLM_USE_NEW_ITK_DEMONS
+#include "itkFastSymmetricForcesDemonsRegistrationFilter.h"
+#else
 #include "itkFastSymmetricForcesDemonsRegistrationWithMaskFilter.h"
+#endif
 
 class Registration_data;
 class Xform;
@@ -16,14 +20,21 @@ class itk_demons_util;
 class itk_fsf_demons_filter: public itk_demons_registration_filter
 {
 
+#if PLM_USE_NEW_ITK_DEMONS
+    typedef itk::FastSymmetricForcesDemonsRegistrationFilter<
+        FloatImageType,
+        FloatImageType,
+        DeformationFieldType> FastSymForcesDemonsFilterType;
+#else
     typedef itk::FastSymmetricForcesDemonsRegistrationWithMaskFilter<
         FloatImageType,
         FloatImageType,
         DeformationFieldType> FastSymForcesDemonsFilterType;
+#endif
 
     typedef FastSymForcesDemonsFilterType::DemonsRegistrationFunctionType DemonsRegFunctionType;
 
-    typedef DemonsRegFunctionType::GradientType GradientType;
+    typedef FastSymForcesDemonsFilterType::GradientType GradientType;
 
     public:
         itk_fsf_demons_filter();

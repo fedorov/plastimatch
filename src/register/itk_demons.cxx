@@ -7,14 +7,17 @@
 #include "itkCommand.h"
 #include "itkHistogramMatchingImageFilter.h"
 #include "itkImageMaskSpatialObject.h"
-
+#include "itkPDEDeformableRegistrationFunction.h"
+        
 #include "itk_demons.h"
 #include "itk_demons_types.h"
 #include "itk_demons_util.h"
 #include "itk_demons_registration_filter.h"
 #include "itk_diff_demons.h"
+#if !PLM_USE_NEW_ITK_DEMONS
 #include "itk_log_demons.h"
 #include "itk_sym_log_demons.h"
+#endif
 #include "itk_fsf_demons.h"
 #include "itk_resample.h"
 #include "logfile.h"
@@ -60,10 +63,14 @@ public:
 
     void Execute(const itk::Object * object, const itk::EventObject & event)
     {
-        //using update version of PDEDeformableRegistrationFilter class
         const PDEDeformableRegistrationFilterType * filter=dynamic_cast< const PDEDeformableRegistrationFilterType* >(object);
-
+#if PLM_USE_NEW_ITK_DEMONS
+        PDEDeformableRegistrationFunctionType * fdfp = dynamic_cast<PDEDeformableRegistrationFunctionType *> (filter->GetDifferenceFunction().GetPointer());
+//        double val = fdfp->GetMetric();
+        double val = 0;
+#else
         double val = filter->GetMetric();
+#endif
         double duration = timer->report ();
         if (typeid(event) == typeid(itk::IterationEvent)) {
             logfile_printf ("MSE [%4d] %9.3f [%6.3f secs]\n",
@@ -78,13 +85,15 @@ public:
     }
 };
 
-//*Setting fixed and moving image masks if available
+// Setting fixed and moving image masks if available
+// It appears that ITK 5 does not support a mask image
 static void 
 set_and_subsample_masks (
     Registration_data* regd,
     PDEDeformableRegistrationFilterType::Pointer& m_filter,
     const Stage_parms* stage)
 {
+#if !PLM_USE_NEW_ITK_DEMONS
     /* Subsample fixed & moving images */
     if (regd->get_fixed_roi())
     {
@@ -112,6 +121,7 @@ set_and_subsample_masks (
         movingSpatialObjectMask->Update();
         m_filter->SetMovingImageMask(movingSpatialObjectMask);
     }
+#endif
 }
 
 static void
@@ -204,6 +214,7 @@ do_itk_demons_stage (
     {
         demons_filter = new itk_diffeomorphic_demons_filter();
     }
+#if !PLM_USE_NEW_ITK_DEMONS
     else if(stage->optim_subtype ==OPTIMIZATION_SUB_LOGDOM_ITK)
     {
         demons_filter = new itk_log_domain_demons_filter();
@@ -212,6 +223,7 @@ do_itk_demons_stage (
     {
         demons_filter = new itk_sym_log_domain_demons_filter();
     }
+#endif
 
     m_filter=demons_filter->get_demons_filter_impl();
 
