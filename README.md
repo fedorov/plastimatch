@@ -27,7 +27,9 @@ https://groups.google.com/d/forum/plastimatch
 Plastimatch binaries are available both for Windows and GNU/Linux.
 
 - For Windows please visit [this page](https://sourceforge.net/projects/plastimatch/).
-- For GNU/Linux check you distro repository or use the [snap package](https://snapcraft.io/plastimatch).
+- For GNU/Linux check your distro repository or use the [snap package](https://snapcraft.io/plastimatch).
+
+[![Get it from the Snap Store](https://snapcraft.io/en/light/install.svg)](https://snapcraft.io/plastimatch)
 
 ---
 
