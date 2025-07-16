@@ -753,7 +753,7 @@ else ()
 endif ()
 
 install (FILES
-  README.TXT
+  README.md
   src/COPYRIGHT.TXT
   DESTINATION ${DOC_DESTINATION}
   )

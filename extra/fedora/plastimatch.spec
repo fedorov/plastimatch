@@ -35,7 +35,7 @@ popd
 
 %files
 %license LICENSE.TXT
-%doc README.TXT
+%doc README.md
 doc/man/plastimatch.1
 %{_bindir}/plastimatch
 
