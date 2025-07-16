@@ -63,7 +63,7 @@ public:
  
     itkTypeMacro( RANSAC, Object );
     /** New method for creating an object using a factory. */
-    itkNewMacro( Self )
+    itkNewMacro( Self );
     
     /**
      * Set/Get the number of threads used by the RANSAC implementation. 

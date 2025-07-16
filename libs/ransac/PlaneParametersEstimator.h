@@ -32,7 +32,7 @@ public:
  
   itkTypeMacro( PlaneParametersEstimator, ParametersEstimator );
      /** New method for creating an object using a factory. */
-  itkNewMacro( Self )
+  itkNewMacro( Self );
 
 	/**
 	 * Compute the (hyper)plane defined by the given data points.

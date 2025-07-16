@@ -28,7 +28,7 @@ public:
     typedef SmartPointer<const Self>                          ConstPointer;
  
     itkTypeMacro( Autolabel_ransac_est, ParametersEstimator );
-    itkNewMacro( Self )
+    itkNewMacro( Self );
 
     virtual void Estimate( std::vector< Autolabel_point *> &data, 
 	std::vector<double> &parameters );
