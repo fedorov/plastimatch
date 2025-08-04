@@ -15,10 +15,8 @@ Download the sample data
 ^^^^^^^^^^^^^^^^^^^^^^^^
 https://sourceforge.net/projects/plastimatch/files/Sample%20Data/micro-ct-projections.zip/download
 
-The data for this tutorial was generously donated by Ming Chao (Howard).
 The images show a calibration plate, and were taken with the CBCT scanner 
-for a small animal irradiation platform at the University of Arkansas 
-for Medical Sciences in Little Rock.
+for a small animal irradiation platform.
 
 You can see representative samples of the original images below.
 
@@ -111,7 +109,7 @@ orientation of the imaging system in room coordinates.  In this section,
 we will first describe the geometry of the real scanner, and then use 
 the drr command to create the geometry files.
 
-The University of Arkansas scanner consists of a fixed X-ray tube and 
+This scanner consists of a fixed X-ray tube and 
 detector, and uses a turntable to rotate the sample.  The X-ray system 
 has the following attributes::
 
