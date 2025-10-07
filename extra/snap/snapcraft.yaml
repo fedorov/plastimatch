@@ -1,0 +1,36 @@
+name: plastimatch
+base: core24
+version: '1.10.0'
+summary: Snap package of Plastimatch for medical image processing
+description: |
+  This Snap package provides Plastimatch, an open-source software for medical
+  image processing, primarily used in image registration and segmentation.
+
+  By packaging Plastimatch as a Snap, this version ensures easy
+  installation, automatic updates, and improved security through confinement.
+
+  The package includes all necessary dependencies, making it a self-contained
+  solution for users working with medical imaging applications.
+
+grade: stable
+confinement: strict
+      
+apps:
+  plastimatch:
+    command: ./plastimatch
+    plugs:
+      - home
+      - removable-media
+      - optical-drive
+
+parts:
+  plastimatch:
+    plugin: dump
+    source: local
+
+    stage-packages:
+      - libinsighttoolkit5.3
+      - libdcmtk17
+      - libpsm2-2-compat
+      - gcc
+
