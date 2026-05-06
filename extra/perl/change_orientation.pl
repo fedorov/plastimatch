@@ -42,6 +42,7 @@ $keep_referenced_uid = 0;
 #$dicom_dir = "/home/gcs6/shared/ben-1/new-mimi";
 #$dicom_dir = "/home/gcs6/shared/ben-1/LPcom_2";
 $dicom_dir = "/home/gcs6/shared/ben-1/GBTEST_01-HFS";
+$dicom_dir = "/home/gcs6/shared/ben-1/2026-03__Studies";
 
 $new_name = "";
 $new_id = "";
@@ -145,10 +146,10 @@ $new_series_description = "";
  # $new_id = "GBTEST_01";
  # $new_birth_date = "20200101";
  # $new_sex = "O";
-$new_name = "GBTEST_01^PBS";
-$new_id = "GBTEST_01";
-$new_birth_date = "20200101";
-$new_sex = "O";
+# $new_name = "GBTEST_01^PBS";
+# $new_id = "GBTEST_01";
+# $new_birth_date = "20200101";
+# $new_sex = "O";
 
 #$new_series_description = "Sex empty";
 #$new_series_description = "Control";
@@ -184,13 +185,14 @@ $new_sex = "O";
 #$new_series_description = "Off-axis W-L";
 #$new_series_description = "Shifted image";
 #$new_series_description = "ScanDose 2";
+$new_series_description = "2DXR 2026-04-29";
 
 $new_patient_position = "";
 $new_image_orientation = "";
 
-$new_patient_position = "HFS";
-$new_image_orientation = "1\\0\\0\\0\\1\\0";
-$new_series_description = "HFS C0";
+# $new_patient_position = "HFS";
+# $new_image_orientation = "1\\0\\0\\0\\1\\0";
+# $new_series_description = "HFS C0";
 
 # $new_patient_position = "FFP";
 # $new_image_orientation = "1\\0\\0\\0\\-1\\0";
