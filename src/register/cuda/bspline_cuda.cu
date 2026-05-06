@@ -17,21 +17,21 @@
 #include "cuda_util.h"
 #include "cuda_mem.h"
 #include "cuda_kernel_util.h"
+#include "cuda_texture.h"
 #include "joint_histogram.h"
 #include "plm_int.h"
 #include "volume.h"
 
-// For CUDA Toolkits < 4.0
-#ifndef cudaTextureType1D
-    #define cudaTextureType1D 0x01
-#endif
-
 // Define file-scope textures
+#if defined (commentout)
 texture<float, cudaTextureType1D, cudaReadModeElementType> tex_moving_image;
 texture<float, cudaTextureType1D, cudaReadModeElementType> tex_coeff;
 texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_x;
 texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_y;
 texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_z;
+#endif
+
+
 ////////////////////////////////////////////////////////////
 
 
@@ -69,10 +69,91 @@ build_gbd (
 }
 
 void
+build_bspline_luts (
+    Dev_pointers_bspline* dev_ptrs,
+    Bspline_xform* bxf,
+    long unsigned* GPU_Memory_Bytes
+)
+{
+    dev_ptrs->LUT_Bspline_x_size = 4*bxf->vox_per_rgn[0]* sizeof(float);
+    dev_ptrs->LUT_Bspline_y_size = 4*bxf->vox_per_rgn[1]* sizeof(float);
+    dev_ptrs->LUT_Bspline_z_size = 4*bxf->vox_per_rgn[2]* sizeof(float);
+    float* LUT_Bspline_x = (float*)malloc(dev_ptrs->LUT_Bspline_x_size);
+    float* LUT_Bspline_y = (float*)malloc(dev_ptrs->LUT_Bspline_y_size);
+    float* LUT_Bspline_z = (float*)malloc(dev_ptrs->LUT_Bspline_z_size);
+
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < bxf->vox_per_rgn[0]; i++) {
+            LUT_Bspline_x[j*bxf->vox_per_rgn[0] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
+        }
+
+        for (int i = 0; i < bxf->vox_per_rgn[1]; i++) {
+            LUT_Bspline_y[j*bxf->vox_per_rgn[1] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
+        }
+
+        for (int i = 0; i < bxf->vox_per_rgn[2]; i++) {
+            LUT_Bspline_z[j*bxf->vox_per_rgn[2] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
+        }
+    }
+
+#if defined (commentout)
+    // GCS: This is an example of the old way of binding a texture
+    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_x,
+                     (void **)&LUT_Bspline_x,
+                     dev_ptrs->LUT_Bspline_x_size);
+
+    cudaBindTexture (0, tex_LUT_Bspline_x, dev_ptrs->LUT_Bspline_x,
+        dev_ptrs->LUT_Bspline_x_size);
+#endif
+    
+    dev_ptrs->bcstate.tex_lut_bspline_x.make_and_bind (
+        &dev_ptrs->LUT_Bspline_x_size,
+        LUT_Bspline_x);
+        
+    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size;
+    printf(".");
+
+    dev_ptrs->bcstate.tex_lut_bspline_y.make_and_bind (
+        &dev_ptrs->LUT_Bspline_y_size,
+        LUT_Bspline_y);
+
+    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_y_size;
+    printf(".");
+
+    dev_ptrs->bcstate.tex_lut_bspline_z.make_and_bind (
+        &dev_ptrs->LUT_Bspline_z_size,
+        LUT_Bspline_z);
+
+    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_z_size;
+    printf(".");
+
+    free (LUT_Bspline_x);
+    free (LUT_Bspline_y);
+    free (LUT_Bspline_z);
+}
+
+void
+build_coeff_luts (
+    Dev_pointers_bspline* dev_ptrs,
+    Bspline_xform* bxf,
+    long unsigned* GPU_Memory_Bytes
+)
+{
+    dev_ptrs->coeff_size = sizeof(float) * bxf->num_coeff;
+
+    dev_ptrs->bcstate.tex_coeff.make_and_bind (
+        &dev_ptrs->coeff_size, 0);
+
+    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
+    GPU_Memory_Bytes += dev_ptrs->coeff_size;
+    printf(".");
+}
+
+void
 CUDA_bspline_mi_init_a (
     Bspline_xform* bxf,
     Bspline_state* bst,
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     Volume* fixed,
     Volume* moving,
     Volume* moving_grad
@@ -135,19 +216,7 @@ CUDA_bspline_mi_init_a (
 
     // Coefficient LUT
     // ----------------------------------------------------------
-    dev_ptrs->coeff_size = sizeof(float) * bxf->num_coeff;
-    CUDA_alloc_zero ((void **)&dev_ptrs->coeff,
-                    dev_ptrs->coeff_size,
-                    cudaAllocStern);
-
-    cudaBindTexture(0, tex_coeff,
-                    dev_ptrs->coeff,
-                    dev_ptrs->coeff_size);
-
-    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
-    GPU_Memory_Bytes += dev_ptrs->coeff_size;
-    printf(".");
-    // ----------------------------------------------------------
+    build_coeff_luts (dev_ptrs, bxf, &GPU_Memory_Bytes);
 
 
     // Score
@@ -291,63 +360,12 @@ CUDA_bspline_mi_init_a (
     // ----------------------------------------------------------
 
 
-
-    // B-spline LUT
+    // Build LUT for B-spline basis values
     // ----------------------------------------------------------
-    dev_ptrs->LUT_Bspline_x_size = 4*bxf->vox_per_rgn[0]* sizeof(float);
-    dev_ptrs->LUT_Bspline_y_size = 4*bxf->vox_per_rgn[1]* sizeof(float);
-    dev_ptrs->LUT_Bspline_z_size = 4*bxf->vox_per_rgn[2]* sizeof(float);
-    float* LUT_Bspline_x = (float*)malloc(dev_ptrs->LUT_Bspline_x_size);
-    float* LUT_Bspline_y = (float*)malloc(dev_ptrs->LUT_Bspline_y_size);
-    float* LUT_Bspline_z = (float*)malloc(dev_ptrs->LUT_Bspline_z_size);
-
-    for (j = 0; j < 4; j++)
-    {
-        for (i = 0; i < bxf->vox_per_rgn[0]; i++) {
-            LUT_Bspline_x[j*bxf->vox_per_rgn[0] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
-        }
-
-        for (i = 0; i < bxf->vox_per_rgn[1]; i++) {
-            LUT_Bspline_y[j*bxf->vox_per_rgn[1] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
-        }
-
-        for (i = 0; i < bxf->vox_per_rgn[2]; i++) {
-            LUT_Bspline_z[j*bxf->vox_per_rgn[2] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
-        }
-    }
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_x,
-                     (void **)&LUT_Bspline_x,
-                     dev_ptrs->LUT_Bspline_x_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_x, dev_ptrs->LUT_Bspline_x, dev_ptrs->LUT_Bspline_x_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size;
-    printf(".");
-
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_y,
-                     (void **)&LUT_Bspline_y,
-                     dev_ptrs->LUT_Bspline_y_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_y, dev_ptrs->LUT_Bspline_y, dev_ptrs->LUT_Bspline_y_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_y_size;
-    printf(".");
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_z,
-                     (void **)&LUT_Bspline_z,
-                     dev_ptrs->LUT_Bspline_z_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_z, dev_ptrs->LUT_Bspline_z, dev_ptrs->LUT_Bspline_z_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_z_size;
-    printf(".");
-
-
-    free (LUT_Bspline_x);
-    free (LUT_Bspline_y);
-    free (LUT_Bspline_z);
-    // ----------------------------------------------------------
+    build_bspline_luts (dev_ptrs, bxf, &GPU_Memory_Bytes);
 
     // Inform user we are finished.
+    // ----------------------------------------------------------
     printf (" done.\n");
 
     // Report global memory allocation.
@@ -387,7 +405,7 @@ CUDA_bspline_mi_init_a (
 // DATE  : October 26, 2010
 void
 CUDA_bspline_mse_init_j (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     Volume* fixed,
     Volume* moving,
     Volume* moving_grad,
@@ -416,14 +434,11 @@ CUDA_bspline_mse_init_j (
     // Moving Image (must be global)
     // ----------------------------------------------------------
     dev_ptrs->moving_image_size = moving->npix * moving->pix_size;
-    CUDA_alloc_copy ((void **)&dev_ptrs->moving_image,
-                     (void **)&moving->img,
-                     dev_ptrs->moving_image_size);
 
-    cudaBindTexture(0, tex_moving_image,
-                    dev_ptrs->moving_image,
-                    dev_ptrs->moving_image_size);
-
+    dev_ptrs->bcstate.fixed.make_and_bind (
+        &dev_ptrs->moving_image_size,
+        (float*) moving->img);
+        
     CUDA_check_error("Failed to bind dev_ptrs->moving_image to texture reference!");
     GPU_Memory_Bytes += dev_ptrs->moving_image_size;
     printf(".");
@@ -443,19 +458,7 @@ CUDA_bspline_mse_init_j (
 
     // Coefficient LUT
     // ----------------------------------------------------------
-    dev_ptrs->coeff_size = sizeof(float) * bxf->num_coeff;
-    CUDA_alloc_zero ((void **)&dev_ptrs->coeff,
-                     dev_ptrs->coeff_size,
-                     cudaAllocStern);
-
-    cudaBindTexture(0, tex_coeff,
-                    dev_ptrs->coeff,
-                    dev_ptrs->coeff_size);
-
-    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
-    GPU_Memory_Bytes += dev_ptrs->coeff_size;
-    printf(".");
-    // ----------------------------------------------------------
+    build_coeff_luts (dev_ptrs, bxf, &GPU_Memory_Bytes);
 
 
 
@@ -615,62 +618,12 @@ CUDA_bspline_mse_init_j (
     // ----------------------------------------------------------
 
 
-    // B-spline LUT
+    // Build LUT for B-spline basis values
     // ----------------------------------------------------------
-    dev_ptrs->LUT_Bspline_x_size = 4*bxf->vox_per_rgn[0]* sizeof(float);
-    dev_ptrs->LUT_Bspline_y_size = 4*bxf->vox_per_rgn[1]* sizeof(float);
-    dev_ptrs->LUT_Bspline_z_size = 4*bxf->vox_per_rgn[2]* sizeof(float);
-    float* LUT_Bspline_x = (float*)malloc(dev_ptrs->LUT_Bspline_x_size);
-    float* LUT_Bspline_y = (float*)malloc(dev_ptrs->LUT_Bspline_y_size);
-    float* LUT_Bspline_z = (float*)malloc(dev_ptrs->LUT_Bspline_z_size);
-
-    for (j = 0; j < 4; j++)
-    {
-        for (i = 0; i < bxf->vox_per_rgn[0]; i++) {
-            LUT_Bspline_x[j*bxf->vox_per_rgn[0] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
-        }
-
-        for (i = 0; i < bxf->vox_per_rgn[1]; i++) {
-            LUT_Bspline_y[j*bxf->vox_per_rgn[1] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
-        }
-
-        for (i = 0; i < bxf->vox_per_rgn[2]; i++) {
-            LUT_Bspline_z[j*bxf->vox_per_rgn[2] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
-        }
-    }
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_x,
-                    (void **)&LUT_Bspline_x,
-                    dev_ptrs->LUT_Bspline_x_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_x, dev_ptrs->LUT_Bspline_x, dev_ptrs->LUT_Bspline_x_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size;
-    printf(".");
-
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_y,
-                    (void **)&LUT_Bspline_y,
-                    dev_ptrs->LUT_Bspline_y_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_y, dev_ptrs->LUT_Bspline_y, dev_ptrs->LUT_Bspline_y_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_y_size;
-    printf(".");
-
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_z,
-                    (void **)&LUT_Bspline_z,
-                    dev_ptrs->LUT_Bspline_z_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_z, dev_ptrs->LUT_Bspline_z, dev_ptrs->LUT_Bspline_z_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_z_size;
-    printf(".");
-
-
-    free (LUT_Bspline_x);
-    free (LUT_Bspline_y);
-    free (LUT_Bspline_z);
-    // ----------------------------------------------------------
+    build_bspline_luts (dev_ptrs, bxf, &GPU_Memory_Bytes);
 
     // Inform user we are finished.
+    // ----------------------------------------------------------
     printf("done.\n");
 
     // Report global memory allocation.
@@ -683,18 +636,14 @@ CUDA_bspline_mse_init_j (
 // DATE  : September 11th, 2009
 void
 CUDA_bspline_mse_cleanup_j (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     Volume* fixed,
     Volume* moving,
     Volume* moving_grad
 )
 {
     // Textures
-    cudaUnbindTexture(tex_moving_image);
-    cudaUnbindTexture(tex_coeff);
-    cudaUnbindTexture(tex_LUT_Bspline_x);
-    cudaUnbindTexture(tex_LUT_Bspline_y);
-    cudaUnbindTexture(tex_LUT_Bspline_z);
+    // TODO: Implement cleanup in Cuda_texture destructor
 
     // Global Memory
     cudaFree(dev_ptrs->fixed_image);
@@ -715,7 +664,6 @@ CUDA_bspline_mse_cleanup_j (
     cudaFree(dev_ptrs->LUT_Bspline_y);
     cudaFree(dev_ptrs->LUT_Bspline_z);
     cudaFree(dev_ptrs->skipped);
-
 }
 
 
@@ -723,17 +671,14 @@ CUDA_bspline_mse_cleanup_j (
 // DATE  : October 29th, 2010
 void
 CUDA_bspline_mi_cleanup_a (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     Volume* fixed,
     Volume* moving,
     Volume* moving_grad
 )
 {
     // Textures
-    cudaUnbindTexture(tex_coeff);
-    cudaUnbindTexture(tex_LUT_Bspline_x);
-    cudaUnbindTexture(tex_LUT_Bspline_y);
-    cudaUnbindTexture(tex_LUT_Bspline_z);
+    // TODO: Implement cleanup in Cuda_texture destructor
 
     // Global Memory
     cudaFree(dev_ptrs->fixed_image);
@@ -761,7 +706,7 @@ CUDA_bspline_mi_cleanup_a (
 
 int
 CUDA_bspline_mi_hist (
-    Dev_Pointers_Bspline *dev_ptrs,
+    Dev_pointers_bspline *dev_ptrs,
     Joint_histogram* mi_hist,
     Volume* fixed,
     Volume* moving,
@@ -781,7 +726,7 @@ CUDA_bspline_mi_hist (
 
 void
 CUDA_bspline_mi_hist_fix (
-    Dev_Pointers_Bspline *dev_ptrs,
+    Dev_pointers_bspline *dev_ptrs,
     Joint_histogram* mi_hist,
     Volume* fixed,
     Volume* moving,
@@ -883,7 +828,7 @@ CUDA_bspline_mi_hist_fix (
 
 void
 CUDA_bspline_mi_hist_mov (
-    Dev_Pointers_Bspline *dev_ptrs,
+    Dev_pointers_bspline *dev_ptrs,
     Joint_histogram* mi_hist,
     Volume* fixed,
     Volume* moving,
@@ -986,7 +931,7 @@ CUDA_bspline_mi_hist_mov (
 
 int
 CUDA_bspline_mi_hist_jnt (
-    Dev_Pointers_Bspline *dev_ptrs,
+    Dev_pointers_bspline *dev_ptrs,
     Joint_histogram* mi_hist,
     Volume* fixed,
     Volume* moving,
@@ -1155,7 +1100,7 @@ CUDA_bspline_mi_grad (
     Volume* moving,
     float num_vox_f,
     float score,
-    Dev_Pointers_Bspline *dev_ptrs
+    Dev_pointers_bspline *dev_ptrs
 )
 {
     Joint_histogram* mi_hist = bst->get_mi_hist();
@@ -1366,7 +1311,7 @@ CUDA_bspline_mse_pt1 (
     Volume* moving_grad,
     Bspline_xform* bxf,
     Bspline_parms* parms,
-    Dev_Pointers_Bspline* dev_ptrs)
+    Dev_pointers_bspline* dev_ptrs)
 {
 #if defined (PROFILE_MSE)
     cuda_timer my_timer;
@@ -1461,7 +1406,7 @@ CUDA_bspline_mse_pt2 (
     float* host_grad,
     float* host_grad_mean,
     float* host_grad_norm,
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     plm_long *num_vox)
 {
 
@@ -1614,7 +1559,7 @@ CUDA_bspline_mse_pt2 (
 //////////////////////////////////////////////////////////////////////////////
 void
 CUDA_bspline_mse_score_dc_dv (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     Bspline_xform* bxf,
     Volume* fixed,
     Volume* moving)
@@ -1682,7 +1627,7 @@ CUDA_bspline_mse_score_dc_dv (
 //////////////////////////////////////////////////////////////////////////////
 void
 CUDA_bspline_condense (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     plm_long* vox_per_rgn,
     int num_tiles
 )
@@ -1737,7 +1682,7 @@ CUDA_bspline_condense (
 ////////////////////////////////////////////////////////////////////////////////
 void
 CUDA_bspline_reduce (
-    Dev_Pointers_Bspline* dev_ptrs,
+    Dev_pointers_bspline* dev_ptrs,
     int num_knots
 )
 {
@@ -1766,6 +1711,10 @@ CUDA_bspline_reduce (
 // waiting for the cpu to generate large vector fields after a super fast
 // gpu driven registration was too troublesome.  this stub function is called
 // in the exact same fashion as the cpu equivalent, but is faster. ^_~
+
+// GCS FIX: This function seems not to be used.  We can upgrade it to use
+// the new texture API when we have time.
+#if defined (commentout)
 void
 CUDA_bspline_interpolate_vf (
     Volume* interp,
@@ -1776,19 +1725,12 @@ CUDA_bspline_interpolate_vf (
     dim3 dimBlock;
 
     // Coefficient LUT
+    // N.b. we can't use build_coeff_lut() because we don't have a dev_ptrs
     // ----------------------------------------------------------
-    float* coeff;
+    Cuda_texture tex_coeff;
     plm_long coeff_size = sizeof(float) * bxf->num_coeff;
-
-    CUDA_alloc_copy ((void **)&coeff,
-                     (void **)&bxf->coeff,
-                     coeff_size);
-
-    cudaBindTexture(0, tex_coeff,
-                    coeff,
-                    coeff_size);
-
-    CUDA_check_error("Failed to bind coeff to texture reference!");
+    tex_coeff.make_and_bind (&coeff_size, bxf->coeff);
+    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
 
 
     // Build B-spline LUTs & attach to textures
@@ -1903,9 +1845,7 @@ CUDA_bspline_interpolate_vf (
     cudaFree(LUT_Bspline_y);
     cudaFree(LUT_Bspline_z);
 }
-
-
-
+#endif
 
 
 
@@ -2774,6 +2714,8 @@ kernel_bspline_condense (
 
     for (tile_pos.z = 0; tile_pos.z < 4; tile_pos.z++)
     {
+
+        C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
         C = tex1Dfetch(tex_LUT_Bspline_z, tile_pos.z * tile_dim.z + voxel_loc.z);
         for (tile_pos.y = 0; tile_pos.y < 4; tile_pos.y++)
         {
@@ -3273,7 +3215,7 @@ kernel_sum_reduction_pt2 (
 // the new coefficient LUT generated by the optimizer in preparation for the
 // next iteration.
 void
-CUDA_bspline_push_coeff (Dev_Pointers_Bspline* dev_ptrs, Bspline_xform* bxf)
+CUDA_bspline_push_coeff (Dev_pointers_bspline* dev_ptrs, Bspline_xform* bxf)
 {
     // Copy the coefficient LUT to the GPU.
     cudaMemcpy(dev_ptrs->coeff, bxf->coeff, dev_ptrs->coeff_size, cudaMemcpyHostToDevice);
@@ -3284,7 +3226,7 @@ CUDA_bspline_push_coeff (Dev_Pointers_Bspline* dev_ptrs, Bspline_xform* bxf)
 // This function sets all elements in the score (located on the GPU) to zero in
 // preparation for the next iteration of the kernel.
 extern "C" void
-CUDA_bspline_zero_score (Dev_Pointers_Bspline* dev_ptrs)
+CUDA_bspline_zero_score (Dev_pointers_bspline* dev_ptrs)
 {
     cudaMemset(dev_ptrs->score, 0, dev_ptrs->score_size);
     CUDA_check_error("Failed to clear the score stream on GPU\n");
@@ -3294,7 +3236,7 @@ CUDA_bspline_zero_score (Dev_Pointers_Bspline* dev_ptrs)
 // This function sets all elemtns in the gradients (located on the GPU) to
 // zero in preparation for the next iteration of the kernel.
 extern "C" void
-CUDA_bspline_zero_grad (Dev_Pointers_Bspline* dev_ptrs) 
+CUDA_bspline_zero_grad (Dev_pointers_bspline* dev_ptrs) 
 {
     cudaMemset(dev_ptrs->grad, 0, dev_ptrs->grad_size);
     CUDA_check_error("Failed to clear the grad stream on GPU\n");

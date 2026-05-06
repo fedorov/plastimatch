@@ -23,15 +23,15 @@ endif ()
 
 set (PLMREGISTERCUDA_SRC
   # GCS 2023-05-15 Defeat CUDA
-#  bspline_cuda.cu
-#  bspline_cuda_kernels.h
+  bspline_cuda.cu
+  bspline_cuda_kernels.h
   demons_cuda.cu
 #  demons_cuda_kernel.cu
   )
 
 set (PLMREGISTERCUDA_IFACE_SRC
   # GCS 2023-05-15 Defeat CUDA
-  # bspline_cuda.cxx
+  bspline_cuda.cxx
   )
 
 if (PLM_BUILD_VISCOUS)

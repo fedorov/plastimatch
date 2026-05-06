@@ -25,6 +25,8 @@ Supported hosts:
 				    hopelessly broken -- build from source
   OSX                               Not supported
 
+  CUDA version must be >= 6.5, compute capability must be >= 5.
+  See FindCUDA_wrap.cmake for details.
 
 Plastimatch >= 1.9.3-483d43ee (2022-05-24)
 

@@ -16,6 +16,7 @@
 #include <cuda.h>
 
 #include "cuda_mem.h"
+#include "cuda_texture.h"
 #include "delayload.h"
 #include "plm_int.h"
 
@@ -37,15 +38,28 @@ class Bspline_state;
 class Bspline_xform;
 class Volume;
 
-typedef struct dev_pointers_bspline Dev_Pointers_Bspline;
-struct dev_pointers_bspline
+/* Texture Memory */
+class Bspline_cuda_state {
+public:
+    Cuda_texture fixed;
+    Cuda_texture moving;
+    Cuda_texture tex_coeff;
+    Cuda_texture tex_lut_bspline_x;
+    Cuda_texture tex_lut_bspline_y;
+    Cuda_texture tex_lut_bspline_z;
+};
+
+class Dev_pointers_bspline
 {
+public:
     // IMPORTANT!
     // Each member of this struct is a POINTER TO
     // AN ADDRESS RESIDING IN THE GPU'S GLOBAL
     // MEMORY!  Care must be taken when referencing
     // and dereferencing members of this structure!
 
+    Bspline_cuda_state bcstate;
+    
     float* fixed_image;     // Fixed Image Voxels
     float* moving_image;    // Moving Image Voxels
     float* moving_grad;     // dc_dp (Gradient) Volume
@@ -159,7 +173,7 @@ extern "C" {
         Volume* moving_grad,
         Bspline_xform* bxf,
         Bspline_parms* parms,
-        Dev_Pointers_Bspline* dev_ptrs
+        Dev_pointers_bspline* dev_ptrs
     );
 
     void
@@ -173,14 +187,14 @@ extern "C" {
         float* host_grad,
         float* host_grad_mean,
         float* host_grad_norm,
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         plm_long* num_vox
     );
 
     PLMREGISTERCUDA_API
     DELAYLOAD_WRAP (
     void CUDA_bspline_mse_init_j,
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Volume* fixed,
         Volume* moving,
         Volume* moving_grad,
@@ -191,7 +205,7 @@ extern "C" {
     PLMREGISTERCUDA_API
     DELAYLOAD_WRAP (
     void CUDA_bspline_mse_cleanup_j,
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Volume* fixed,
         Volume* moving,
         Volume* moving_grad
@@ -200,7 +214,7 @@ extern "C" {
     PLMREGISTERCUDA_API
     DELAYLOAD_WRAP (
     void CUDA_bspline_mi_cleanup_a,
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Volume* fixed,
         Volume* moving,
         Volume* moving_grad
@@ -208,23 +222,23 @@ extern "C" {
 
     void
     CUDA_bspline_push_coeff (
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Bspline_xform* bxf
     );
     
     void
     CUDA_bspline_zero_score (
-        Dev_Pointers_Bspline* dev_ptrs
+        Dev_pointers_bspline* dev_ptrs
     );
     
     void
     CUDA_bspline_zero_grad (
-        Dev_Pointers_Bspline* dev_ptrs
+        Dev_pointers_bspline* dev_ptrs
     );
 
     void
     CUDA_bspline_mse_score_dc_dv (
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Bspline_xform* bxf,
         Volume* fixed,
         Volume* moving
@@ -232,14 +246,14 @@ extern "C" {
 
     void
     CUDA_bspline_condense (
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         plm_long* vox_per_rgn,
         int num_tiles
     );
 
     void
     CUDA_bspline_reduce (
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         int num_knots
     );
 
@@ -269,7 +283,7 @@ extern "C" {
     void CUDA_bspline_mi_init_a,
         Bspline_xform* bxf,
         Bspline_state* bst,
-        Dev_Pointers_Bspline* dev_ptrs,
+        Dev_pointers_bspline* dev_ptrs,
         Volume* fixed,
         Volume* moving,
         Volume* moving_grad
@@ -277,7 +291,7 @@ extern "C" {
 
     int
     CUDA_bspline_mi_hist (
-        Dev_Pointers_Bspline *dev_ptrs,
+        Dev_pointers_bspline *dev_ptrs,
         Joint_histogram* mi_hist,
         Volume* fixed,
         Volume* moving,
@@ -286,7 +300,7 @@ extern "C" {
 
     void
     CUDA_bspline_mi_hist_fix (
-        Dev_Pointers_Bspline *dev_ptrs,
+        Dev_pointers_bspline *dev_ptrs,
         Joint_histogram* mi_hist,
         Volume* fixed,
         Volume* moving,
@@ -295,7 +309,7 @@ extern "C" {
     
     void
     CUDA_bspline_mi_hist_mov (
-        Dev_Pointers_Bspline *dev_ptrs,
+        Dev_pointers_bspline *dev_ptrs,
         Joint_histogram* mi_hist,
         Volume* fixed,
         Volume* moving,
@@ -304,7 +318,7 @@ extern "C" {
     
     int
     CUDA_bspline_mi_hist_jnt (
-        Dev_Pointers_Bspline *dev_ptrs,
+        Dev_pointers_bspline *dev_ptrs,
         Joint_histogram* mi_hist,
         Volume* fixed,
         Volume* moving,
@@ -319,7 +333,7 @@ extern "C" {
         Volume* moving,
         float num_vox_f,
         float score,
-        Dev_Pointers_Bspline *dev_ptrs
+        Dev_pointers_bspline *dev_ptrs
     );
 
     PLMREGISTERCUDA_API
