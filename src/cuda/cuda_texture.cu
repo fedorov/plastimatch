@@ -5,7 +5,7 @@
 
 #include "cuda_texture.h"
 
-Cuda_texture::Cuda_texture ()
+Cuda_texture::Cuda_texture () 
 {
     dev = 0;
     tex = 0;
