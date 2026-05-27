@@ -2689,290 +2689,290 @@ kernel_bspline_condense (
     for (voxel_cluster=0; voxel_cluster < tile_dim.w; voxel_cluster+=64)
     {
 
-    // ----------------------------------------------------------
-    //                  STAGE 1 IN POWERPOINT
-    // ----------------------------------------------------------
-    // Second, we pulldown the current voxel cluster.
-    // Each thread in the warp pulls down 1 voxel (3 values)
-    // ----------------------------------------------------------
-    voxel_val.x = dc_dv_x[tileOffset + voxel_cluster + threadIdx.x];
-    voxel_val.y = dc_dv_y[tileOffset + voxel_cluster + threadIdx.x];
-    voxel_val.z = dc_dv_z[tileOffset + voxel_cluster + threadIdx.x];
-    // ----------------------------------------------------------
+        // ----------------------------------------------------------
+        //                  STAGE 1 IN POWERPOINT
+        // ----------------------------------------------------------
+        // Second, we pulldown the current voxel cluster.
+        // Each thread in the warp pulls down 1 voxel (3 values)
+        // ----------------------------------------------------------
+        voxel_val.x = dc_dv_x[tileOffset + voxel_cluster + threadIdx.x];
+        voxel_val.y = dc_dv_y[tileOffset + voxel_cluster + threadIdx.x];
+        voxel_val.z = dc_dv_z[tileOffset + voxel_cluster + threadIdx.x];
+        // ----------------------------------------------------------
 
-    // Third, find the [x,y,z] location within the current tile
-    // for the voxel this thread is processing.
-    voxel_idx = (voxel_cluster + threadIdx.x);
-    voxel_loc.z = voxel_idx / (tile_dim.x * tile_dim.y);
-    voxel_loc.y = (voxel_idx - (voxel_loc.z * tile_dim.x * tile_dim.y)) / tile_dim.x;
-    voxel_loc.x = voxel_idx - voxel_loc.z * tile_dim.x * tile_dim.y - (voxel_loc.y * tile_dim.x);
+        // Third, find the [x,y,z] location within the current tile
+        // for the voxel this thread is processing.
+        voxel_idx = (voxel_cluster + threadIdx.x);
+        voxel_loc.z = voxel_idx / (tile_dim.x * tile_dim.y);
+        voxel_loc.y = (voxel_idx - (voxel_loc.z * tile_dim.x * tile_dim.y)) / tile_dim.x;
+        voxel_loc.x = voxel_idx - voxel_loc.z * tile_dim.x * tile_dim.y - (voxel_loc.y * tile_dim.x);
 
-    // Fourth, we will perform all 64x3 calculations on the current voxel cluster.
-    // (Every thead in the warp will be doing this at the same time for its voxel)
+        // Fourth, we will perform all 64x3 calculations on the current voxel cluster.
+        // (Every thead in the warp will be doing this at the same time for its voxel)
 
-    tile_pos.w = 0; // Current tile position within [0,63]
+        tile_pos.w = 0; // Current tile position within [0,63]
 
-    for (tile_pos.z = 0; tile_pos.z < 4; tile_pos.z++)
-    {
-        //C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
-        C = tex1Dfetch(tex_LUT_Bspline_z, tile_pos.z * tile_dim.z + voxel_loc.z);
-        for (tile_pos.y = 0; tile_pos.y < 4; tile_pos.y++)
+        for (tile_pos.z = 0; tile_pos.z < 4; tile_pos.z++)
         {
-        B = C * tex1Dfetch(tex_LUT_Bspline_y, tile_pos.y * tile_dim.y + voxel_loc.y);
-        tile_pos.x = 0;
+            //C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
+            C = tex1Dfetch(tex_LUT_Bspline_z, tile_pos.z * tile_dim.z + voxel_loc.z);
+            for (tile_pos.y = 0; tile_pos.y < 4; tile_pos.y++)
+            {
+                B = C * tex1Dfetch(tex_LUT_Bspline_y, tile_pos.y * tile_dim.y + voxel_loc.y);
+                tile_pos.x = 0;
 
-        // #### FIRST HALF ####
+                // #### FIRST HALF ####
 
-        // ---------------------------------------------------------------------------------
-        // Do the 1st two x-positions out of four using our two
-        // blocks of shared memory for reduction
+                // ---------------------------------------------------------------------------------
+                // Do the 1st two x-positions out of four using our two
+                // blocks of shared memory for reduction
 
-        // Calculate the b-spline multiplier for this voxel @ this tile
-        // position relative to a given control knot.
-        // ---------------------------------------------------------------------------------
-        A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                // Calculate the b-spline multiplier for this voxel @ this tile
+                // position relative to a given control knot.
+                // ---------------------------------------------------------------------------------
+                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
 
-        // Perform the multiplication and store to redux shared memory
-        sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
-        sBuffer_redux_y[threadIdx.x] = voxel_val.y * A;
-        sBuffer_redux_z[threadIdx.x] = voxel_val.z * A;
-        tile_pos.x++;
+                // Perform the multiplication and store to redux shared memory
+                sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
+                sBuffer_redux_y[threadIdx.x] = voxel_val.y * A;
+                sBuffer_redux_z[threadIdx.x] = voxel_val.z * A;
+                tile_pos.x++;
 
-        // Calculate the b-spline multiplier for this voxel @ the next tile
-        // position relative to a given control knot.
-        A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                // Calculate the b-spline multiplier for this voxel @ the next tile
+                // position relative to a given control knot.
+                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
 
-        // Perform the multiplication and store to redux shared memory
-        // for the second position
-        sBuffer_redux_x2[threadIdx.x] = voxel_val.x * A;
-        sBuffer_redux_y2[threadIdx.x] = voxel_val.y * A;
-        sBuffer_redux_z2[threadIdx.x] = voxel_val.z * A;
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
+                // Perform the multiplication and store to redux shared memory
+                // for the second position
+                sBuffer_redux_x2[threadIdx.x] = voxel_val.x * A;
+                sBuffer_redux_y2[threadIdx.x] = voxel_val.y * A;
+                sBuffer_redux_z2[threadIdx.x] = voxel_val.z * A;
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
 
-        // ---------------------------------------------------------------------------------
-        // All 64 dc_dv values in the current cluster have been processed
-        // for the current 2 tile positions (out of 64 total tile positions).
+                // ---------------------------------------------------------------------------------
+                // All 64 dc_dv values in the current cluster have been processed
+                // for the current 2 tile positions (out of 64 total tile positions).
                 
-        // We now perform a sum reduction on these 64 dc_dv values to
-        // condense the data down to one value.
-        // ---------------------------------------------------------------------------------
-        if (threadIdx.x < 32)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 32];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 32];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 32];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 32];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 32];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 32];
-        }
-        __syncthreads();
+                // We now perform a sum reduction on these 64 dc_dv values to
+                // condense the data down to one value.
+                // ---------------------------------------------------------------------------------
+                if (threadIdx.x < 32)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 32];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 32];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 32];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 32];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 32];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 32];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 16)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 16];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 16];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 16];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 16];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 16];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 16];
-        }
-        __syncthreads();
+                if (threadIdx.x < 16)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 16];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 16];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 16];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 16];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 16];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 16];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 8)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 8];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 8];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 8];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 8];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 8];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 8];
-        }
-        __syncthreads();
+                if (threadIdx.x < 8)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 8];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 8];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 8];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 8];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 8];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 8];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 4)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 4];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 4];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 4];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 4];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 4];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 4];
-        }
-        __syncthreads();
+                if (threadIdx.x < 4)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 4];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 4];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 4];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 4];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 4];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 4];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 2)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 2];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 2];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 2];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 2];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 2];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 2];
-        }
-        __syncthreads();
+                if (threadIdx.x < 2)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 2];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 2];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 2];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 2];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 2];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 2];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 1)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 1];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 1];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 1];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 1];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 1];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 1];
-        }
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
-
-
-
-        // ---------------------------------------------------------------------------------
-        // We then accumulate this single condensed value into the element of
-        // shared memory that correlates to the current tile position.
-        // ---------------------------------------------------------------------------------
-        if (threadIdx.x == 0)
-        {
-            sBuffer_x[tile_pos.w] += sBuffer_redux_x[0];
-            sBuffer_y[tile_pos.w] += sBuffer_redux_y[0];
-            sBuffer_z[tile_pos.w] += sBuffer_redux_z[0];
-            tile_pos.w++;
-
-            sBuffer_x[tile_pos.w] += sBuffer_redux_x2[0];
-            sBuffer_y[tile_pos.w] += sBuffer_redux_y2[0];
-            sBuffer_z[tile_pos.w] += sBuffer_redux_z2[0];
-            tile_pos.w++;
-        }
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
+                if (threadIdx.x < 1)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 1];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 1];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 1];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 1];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 1];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 1];
+                }
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
 
-        // #### SECOND HALF ####
 
-        // ---------------------------------------------------------------------------------
-        // Do the 2nd two x-positions out of four using our two
-        // blocks of shared memory for reduction
-        // ---------------------------------------------------------------------------------
-        tile_pos.x++;
-        A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                // ---------------------------------------------------------------------------------
+                // We then accumulate this single condensed value into the element of
+                // shared memory that correlates to the current tile position.
+                // ---------------------------------------------------------------------------------
+                if (threadIdx.x == 0)
+                {
+                    sBuffer_x[tile_pos.w] += sBuffer_redux_x[0];
+                    sBuffer_y[tile_pos.w] += sBuffer_redux_y[0];
+                    sBuffer_z[tile_pos.w] += sBuffer_redux_z[0];
+                    tile_pos.w++;
 
-        // Perform the multiplication and store to redux shared memory
-        sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
-        sBuffer_redux_y[threadIdx.x] = voxel_val.y * A;
-        sBuffer_redux_z[threadIdx.x] = voxel_val.z * A;
-        tile_pos.x++;
+                    sBuffer_x[tile_pos.w] += sBuffer_redux_x2[0];
+                    sBuffer_y[tile_pos.w] += sBuffer_redux_y2[0];
+                    sBuffer_z[tile_pos.w] += sBuffer_redux_z2[0];
+                    tile_pos.w++;
+                }
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
-        // Calculate the b-spline multiplier for this voxel @ the next tile
-        // position relative to a given control knot.
-        A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
 
-        // Perform the multiplication and store to redux shared memory
-        // for the second position
-        sBuffer_redux_x2[threadIdx.x] = voxel_val.x * A;
-        sBuffer_redux_y2[threadIdx.x] = voxel_val.y * A;
-        sBuffer_redux_z2[threadIdx.x] = voxel_val.z * A;
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
+                // #### SECOND HALF ####
+
+                // ---------------------------------------------------------------------------------
+                // Do the 2nd two x-positions out of four using our two
+                // blocks of shared memory for reduction
+                // ---------------------------------------------------------------------------------
+                tile_pos.x++;
+                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+
+                // Perform the multiplication and store to redux shared memory
+                sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
+                sBuffer_redux_y[threadIdx.x] = voxel_val.y * A;
+                sBuffer_redux_z[threadIdx.x] = voxel_val.z * A;
+                tile_pos.x++;
+
+                // Calculate the b-spline multiplier for this voxel @ the next tile
+                // position relative to a given control knot.
+                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+
+                // Perform the multiplication and store to redux shared memory
+                // for the second position
+                sBuffer_redux_x2[threadIdx.x] = voxel_val.x * A;
+                sBuffer_redux_y2[threadIdx.x] = voxel_val.y * A;
+                sBuffer_redux_z2[threadIdx.x] = voxel_val.z * A;
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
 
                     
-        // ---------------------------------------------------------------------------------
-        // All 64 dc_dv values in the current cluster have been processed
-        // for the current 2 tile positions (out of 64 total tile positions).
-        //
-        // We now perform a sum reduction on these 64 dc_dv values to
-        // condense the data down to one value.
-        // ---------------------------------------------------------------------------------
-        if (threadIdx.x < 32)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 32];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 32];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 32];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 32];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 32];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 32];
-        }
-        __syncthreads();
+                // ---------------------------------------------------------------------------------
+                // All 64 dc_dv values in the current cluster have been processed
+                // for the current 2 tile positions (out of 64 total tile positions).
+                //
+                // We now perform a sum reduction on these 64 dc_dv values to
+                // condense the data down to one value.
+                // ---------------------------------------------------------------------------------
+                if (threadIdx.x < 32)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 32];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 32];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 32];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 32];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 32];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 32];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 16)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 16];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 16];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 16];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 16];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 16];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 16];
-        }
-        __syncthreads();
+                if (threadIdx.x < 16)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 16];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 16];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 16];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 16];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 16];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 16];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 8)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 8];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 8];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 8];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 8];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 8];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 8];
-        }
-        __syncthreads();
+                if (threadIdx.x < 8)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 8];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 8];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 8];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 8];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 8];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 8];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 4)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 4];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 4];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 4];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 4];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 4];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 4];
-        }
-        __syncthreads();
+                if (threadIdx.x < 4)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 4];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 4];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 4];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 4];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 4];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 4];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 2)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 2];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 2];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 2];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 2];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 2];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 2];
-        }
-        __syncthreads();
+                if (threadIdx.x < 2)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 2];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 2];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 2];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 2];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 2];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 2];
+                }
+                __syncthreads();
 
-        if (threadIdx.x < 1)
-        {
-            sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 1];
-            sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 1];
-            sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 1];
-            sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 1];
-            sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 1];
-            sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 1];
-        }
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
+                if (threadIdx.x < 1)
+                {
+                    sBuffer_redux_x[threadIdx.x] += sBuffer_redux_x[threadIdx.x + 1];
+                    sBuffer_redux_y[threadIdx.x] += sBuffer_redux_y[threadIdx.x + 1];
+                    sBuffer_redux_z[threadIdx.x] += sBuffer_redux_z[threadIdx.x + 1];
+                    sBuffer_redux_x2[threadIdx.x] += sBuffer_redux_x2[threadIdx.x + 1];
+                    sBuffer_redux_y2[threadIdx.x] += sBuffer_redux_y2[threadIdx.x + 1];
+                    sBuffer_redux_z2[threadIdx.x] += sBuffer_redux_z2[threadIdx.x + 1];
+                }
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
 
 
-        // ---------------------------------------------------------------------------------
-        // We then accumulate this single condensed value into the element of
-        // shared memory that correlates to the current tile position.
-        // ---------------------------------------------------------------------------------
-        if (threadIdx.x == 0)
-        {
-            sBuffer_x[tile_pos.w] += sBuffer_redux_x[0];
-            sBuffer_y[tile_pos.w] += sBuffer_redux_y[0];
-            sBuffer_z[tile_pos.w] += sBuffer_redux_z[0];
-            tile_pos.w++;
+                // ---------------------------------------------------------------------------------
+                // We then accumulate this single condensed value into the element of
+                // shared memory that correlates to the current tile position.
+                // ---------------------------------------------------------------------------------
+                if (threadIdx.x == 0)
+                {
+                    sBuffer_x[tile_pos.w] += sBuffer_redux_x[0];
+                    sBuffer_y[tile_pos.w] += sBuffer_redux_y[0];
+                    sBuffer_z[tile_pos.w] += sBuffer_redux_z[0];
+                    tile_pos.w++;
 
-            sBuffer_x[tile_pos.w] += sBuffer_redux_x2[0];
-            sBuffer_y[tile_pos.w] += sBuffer_redux_y2[0];
-            sBuffer_z[tile_pos.w] += sBuffer_redux_z2[0];
-            tile_pos.w++;
-        }
-        __syncthreads();
-        // ---------------------------------------------------------------------------------
+                    sBuffer_x[tile_pos.w] += sBuffer_redux_x2[0];
+                    sBuffer_y[tile_pos.w] += sBuffer_redux_y2[0];
+                    sBuffer_z[tile_pos.w] += sBuffer_redux_z2[0];
+                    tile_pos.w++;
+                }
+                __syncthreads();
+                // ---------------------------------------------------------------------------------
 
-        }
-    } // LOOP: 64 B-Spline Values for current voxel_cluster
+            }
+        } // LOOP: 64 B-Spline Values for current voxel_cluster
 
     } // LOOP: voxel_clusters
 
