@@ -2714,8 +2714,7 @@ kernel_bspline_condense (
 
     for (tile_pos.z = 0; tile_pos.z < 4; tile_pos.z++)
     {
-
-        C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
+        //C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
         C = tex1Dfetch(tex_LUT_Bspline_z, tile_pos.z * tile_dim.z + voxel_loc.z);
         for (tile_pos.y = 0; tile_pos.y < 4; tile_pos.y++)
         {
