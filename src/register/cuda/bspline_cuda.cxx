@@ -616,7 +616,7 @@ CUDA_bspline_mi_a (
     Volume *moving_grad = bst->moving_grad;
     UNUSED_VARIABLE (moving_grad);
 
-    Dev_Pointers_Bspline* dev_ptrs = (Dev_Pointers_Bspline*)bst->dev_ptrs;
+    Dev_pointers_bspline* dev_ptrs = (Dev_pointers_bspline*) bst->dev_ptrs;
 
     // --- DECLARE LOCAL VARIABLES ------------------------------
     Bspline_score* ssd; // Holds the SSD "Score" information
@@ -738,7 +738,7 @@ CUDA_bspline_mse_j (
     Volume *moving = bst->moving;
     Volume *moving_grad = bst->moving_grad;
 
-    Dev_Pointers_Bspline* dev_ptrs = (Dev_Pointers_Bspline*)bst->dev_ptrs;
+    Dev_pointers_bspline* dev_ptrs = (Dev_pointers_bspline*)bst->dev_ptrs;
 
     // --- DECLARE LOCAL VARIABLES ------------------------------
     Bspline_score* ssd;     // Holds the SSD "Score" information

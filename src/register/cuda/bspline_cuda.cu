@@ -22,19 +22,7 @@
 #include "plm_int.h"
 #include "volume.h"
 
-// Define file-scope textures
-#if defined (commentout)
-texture<float, cudaTextureType1D, cudaReadModeElementType> tex_moving_image;
-texture<float, cudaTextureType1D, cudaReadModeElementType> tex_coeff;
-texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_x;
-texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_y;
-texture<float, cudaTextureType1D, cudaReadModeElementType> tex_LUT_Bspline_z;
-#endif
-
-
 ////////////////////////////////////////////////////////////
-
-
 // Constructs the GPU Bspline Data structure
 void
 build_gbd (
@@ -75,12 +63,12 @@ build_bspline_luts (
     long unsigned* GPU_Memory_Bytes
 )
 {
-    dev_ptrs->LUT_Bspline_x_size = 4*bxf->vox_per_rgn[0]* sizeof(float);
-    dev_ptrs->LUT_Bspline_y_size = 4*bxf->vox_per_rgn[1]* sizeof(float);
-    dev_ptrs->LUT_Bspline_z_size = 4*bxf->vox_per_rgn[2]* sizeof(float);
-    float* LUT_Bspline_x = (float*)malloc(dev_ptrs->LUT_Bspline_x_size);
-    float* LUT_Bspline_y = (float*)malloc(dev_ptrs->LUT_Bspline_y_size);
-    float* LUT_Bspline_z = (float*)malloc(dev_ptrs->LUT_Bspline_z_size);
+    dev_ptrs->LUT_Bspline_x_size = 4 * bxf->vox_per_rgn[0] * sizeof(float);
+    dev_ptrs->LUT_Bspline_y_size = 4 * bxf->vox_per_rgn[1] * sizeof(float);
+    dev_ptrs->LUT_Bspline_z_size = 4 * bxf->vox_per_rgn[2] * sizeof(float);
+    float* LUT_Bspline_x = (float*) malloc (dev_ptrs->LUT_Bspline_x_size);
+    float* LUT_Bspline_y = (float*) malloc (dev_ptrs->LUT_Bspline_y_size);
+    float* LUT_Bspline_z = (float*) malloc (dev_ptrs->LUT_Bspline_z_size);
 
     for (int j = 0; j < 4; j++) {
         for (int i = 0; i < bxf->vox_per_rgn[0]; i++) {
@@ -96,36 +84,16 @@ build_bspline_luts (
         }
     }
 
-#if defined (commentout)
-    // GCS: This is an example of the old way of binding a texture
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Bspline_x,
-                     (void **)&LUT_Bspline_x,
-                     dev_ptrs->LUT_Bspline_x_size);
-
-    cudaBindTexture (0, tex_LUT_Bspline_x, dev_ptrs->LUT_Bspline_x,
-        dev_ptrs->LUT_Bspline_x_size);
-#endif
-    
-    dev_ptrs->bcstate.tex_lut_bspline_x.make_and_bind (
-        &dev_ptrs->LUT_Bspline_x_size,
-        LUT_Bspline_x);
-        
-    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size;
+    cudaMalloc (&dev_ptrs->lut_bspline_x, dev_ptrs->LUT_Bspline_x_size);
+    printf(".");
+    cudaMalloc (&dev_ptrs->lut_bspline_y, dev_ptrs->LUT_Bspline_y_size);
+    printf(".");
+    cudaMalloc (&dev_ptrs->lut_bspline_z, dev_ptrs->LUT_Bspline_z_size);
     printf(".");
 
-    dev_ptrs->bcstate.tex_lut_bspline_y.make_and_bind (
-        &dev_ptrs->LUT_Bspline_y_size,
-        LUT_Bspline_y);
-
-    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_y_size;
-    printf(".");
-
-    dev_ptrs->bcstate.tex_lut_bspline_z.make_and_bind (
-        &dev_ptrs->LUT_Bspline_z_size,
-        LUT_Bspline_z);
-
-    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_z_size;
-    printf(".");
+    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size
+        + dev_ptrs->LUT_Bspline_y_size
+        + dev_ptrs->LUT_Bspline_z_size;
 
     free (LUT_Bspline_x);
     free (LUT_Bspline_y);
@@ -140,11 +108,7 @@ build_coeff_luts (
 )
 {
     dev_ptrs->coeff_size = sizeof(float) * bxf->num_coeff;
-
-    dev_ptrs->bcstate.tex_coeff.make_and_bind (
-        &dev_ptrs->coeff_size, 0);
-
-    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
+    cudaMalloc (&dev_ptrs->coeff, dev_ptrs->coeff_size);
     GPU_Memory_Bytes += dev_ptrs->coeff_size;
     printf(".");
 }
@@ -434,12 +398,9 @@ CUDA_bspline_mse_init_j (
     // Moving Image (must be global)
     // ----------------------------------------------------------
     dev_ptrs->moving_image_size = moving->npix * moving->pix_size;
-
-    dev_ptrs->bcstate.fixed.make_and_bind (
-        &dev_ptrs->moving_image_size,
-        (float*) moving->img);
-        
-    CUDA_check_error("Failed to bind dev_ptrs->moving_image to texture reference!");
+    CUDA_alloc_copy ((void **)&dev_ptrs->moving_image,
+                     (void **)&moving->img,
+                     dev_ptrs->moving_image_size);
     GPU_Memory_Bytes += dev_ptrs->moving_image_size;
     printf(".");
     // ----------------------------------------------------------
@@ -660,9 +621,6 @@ CUDA_bspline_mse_cleanup_j (
     cudaFree(dev_ptrs->cond_x);
     cudaFree(dev_ptrs->cond_y);
     cudaFree(dev_ptrs->cond_z);
-    cudaFree(dev_ptrs->LUT_Bspline_x);
-    cudaFree(dev_ptrs->LUT_Bspline_y);
-    cudaFree(dev_ptrs->LUT_Bspline_z);
     cudaFree(dev_ptrs->skipped);
 }
 
@@ -698,9 +656,6 @@ CUDA_bspline_mi_cleanup_a (
     cudaFree(dev_ptrs->cond_z);
     cudaFree(dev_ptrs->LUT_Offsets);
     cudaFree(dev_ptrs->LUT_Knot);
-    cudaFree(dev_ptrs->LUT_Bspline_x);
-    cudaFree(dev_ptrs->LUT_Bspline_y);
-    cudaFree(dev_ptrs->LUT_Bspline_z);
 }
 
 
@@ -764,6 +719,10 @@ CUDA_bspline_mi_hist_fix (
     kernel_bspline_mi_hist_fix <<<dimGrid, dimBlock, smemSize>>> (
         dev_ptrs->f_hist_seg,       // partial histogram (moving image)
         dev_ptrs->fixed_image,      // moving image voxels
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
+        dev_ptrs->coeff,
         mi_hist->fixed.offset,      // histogram origin
         1.0f/mi_hist->fixed.delta,  // histogram delta
         mi_hist->fixed.bins,        // # histogram bins
@@ -866,6 +825,10 @@ CUDA_bspline_mi_hist_mov (
     kernel_bspline_mi_hist_mov <<<dimGrid, dimBlock, smemSize>>> (
         dev_ptrs->m_hist_seg,       // partial histogram (moving image)
         dev_ptrs->moving_image,     // moving image voxels
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
+        dev_ptrs->coeff,
         mi_hist->moving.offset,     // histogram origin
         1.0f/mi_hist->moving.delta, // histogram delta
         mi_hist->moving.bins,       // # histogram bins
@@ -1003,27 +966,31 @@ CUDA_bspline_mi_hist_jnt (
 
     // Launch kernel with one thread per voxel
     kernel_bspline_mi_hist_jnt <<<dimGrid1, dimBlock1, smemSize>>> (
-            dev_ptrs->skipped_atomic,   // # voxels that map outside moving
-            dev_ptrs->j_hist_seg,       // partial histogram (moving image)
-            dev_ptrs->fixed_image,      // fixed  image voxels
-            dev_ptrs->moving_image,     // moving image voxels
-            mi_hist->fixed.offset,      // fixed histogram origin
-            mi_hist->moving.offset,     // moving histogram origin
-            1.0f/mi_hist->fixed.delta,  // fixed histogram delta
-            1.0f/mi_hist->moving.delta, // moving histogram delta
-            mi_hist->fixed.bins,        // # fixed bins
-            mi_hist->moving.bins,       // # moving bins
-            gbd.vox_per_rgn,            // voxels per region
-            gbd.fix_dim,                // fixed  image dimensions
-            gbd.mov_dim,                // moving image dimensions
-            gbd.rdims,                  //       region dimensions
-            gbd.cdims,                  // # control points in x,y,z
-            gbd.img_origin,             // image origin
-            gbd.img_spacing,            // image spacing
-            gbd.mov_origin,             // moving image origin
-            gbd.mov_spacing,            // moving image pixel spacing
-            gbd.roi_dim,                // region dims
-            gbd.roi_offset              // region offset
+        dev_ptrs->skipped_atomic,   // # voxels that map outside moving
+        dev_ptrs->j_hist_seg,       // partial histogram (moving image)
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
+        dev_ptrs->coeff,
+        dev_ptrs->fixed_image,      // fixed  image voxels
+        dev_ptrs->moving_image,     // moving image voxels
+        mi_hist->fixed.offset,      // fixed histogram origin
+        mi_hist->moving.offset,     // moving histogram origin
+        1.0f/mi_hist->fixed.delta,  // fixed histogram delta
+        1.0f/mi_hist->moving.delta, // moving histogram delta
+        mi_hist->fixed.bins,        // # fixed bins
+        mi_hist->moving.bins,       // # moving bins
+        gbd.vox_per_rgn,            // voxels per region
+        gbd.fix_dim,                // fixed  image dimensions
+        gbd.mov_dim,                // moving image dimensions
+        gbd.rdims,                  //       region dimensions
+        gbd.cdims,                  // # control points in x,y,z
+        gbd.img_origin,             // image origin
+        gbd.img_spacing,            // image spacing
+        gbd.mov_origin,             // moving image origin
+        gbd.mov_spacing,            // moving image pixel spacing
+        gbd.roi_dim,                // region dims
+        gbd.roi_offset              // region offset
     );
 
     cudaDeviceSynchronize();
@@ -1132,15 +1099,15 @@ CUDA_bspline_mi_grad (
         }
 
         cudaMemcpy (dev_ptrs->f_hist, f_tmp,
-                dev_ptrs->f_hist_size, cudaMemcpyHostToDevice);
+            dev_ptrs->f_hist_size, cudaMemcpyHostToDevice);
         CUDA_check_error ("Unable to copy fixed histograms from CPU to GPU!\n");
 
         cudaMemcpy (dev_ptrs->m_hist, m_tmp,
-                dev_ptrs->m_hist_size, cudaMemcpyHostToDevice);
+            dev_ptrs->m_hist_size, cudaMemcpyHostToDevice);
         CUDA_check_error ("Unable to copy moving histograms from CPU to GPU!\n");
 
         cudaMemcpy (dev_ptrs->j_hist, j_tmp,
-                dev_ptrs->j_hist_size, cudaMemcpyHostToDevice);
+            dev_ptrs->j_hist_size, cudaMemcpyHostToDevice);
         CUDA_check_error ("Unable to copy joint histograms from CPU to GPU!\n");
 
         free (f_tmp);
@@ -1150,11 +1117,11 @@ CUDA_bspline_mi_grad (
 
     // Initial dc_dv streams
     cudaMemset(dev_ptrs->dc_dv_x, 0, dev_ptrs->dc_dv_x_size);
-       CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_x");
+    CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_x");
     cudaMemset(dev_ptrs->dc_dv_y, 0, dev_ptrs->dc_dv_y_size);
-       CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_y");
+    CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_y");
     cudaMemset(dev_ptrs->dc_dv_z, 0, dev_ptrs->dc_dv_z_size);
-       CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_z");
+    CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_z");
     
 
     // --- INITIALIZE GRID ---
@@ -1170,8 +1137,8 @@ CUDA_bspline_mi_grad (
     // Search for a valid execution configuration
     // for the required # of blocks.
     for (threads_per_block = 192; threads_per_block > 32; threads_per_block -= 32) {
-    num_blocks = (num_threads + threads_per_block - 1) / threads_per_block;
-    sqrt_num_blocks = (int)sqrt((float)num_blocks);
+        num_blocks = (num_threads + threads_per_block - 1) / threads_per_block;
+        sqrt_num_blocks = (int)sqrt((float)num_blocks);
 
         for (i = sqrt_num_blocks; i < 65535; i++) {
             if (num_blocks % i == 0) {
@@ -1212,7 +1179,11 @@ CUDA_bspline_mi_grad (
     kernel_bspline_mi_dc_dv <<<dimGrid1, dimBlock1>>> (
         dev_ptrs->dc_dv_x,
         dev_ptrs->dc_dv_y,
-        dev_ptrs->dc_dv_z,  
+        dev_ptrs->dc_dv_z,
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
+        dev_ptrs->coeff,
         dev_ptrs->f_hist,
         dev_ptrs->m_hist,
         dev_ptrs->j_hist,
@@ -1317,7 +1288,6 @@ CUDA_bspline_mse_pt1 (
     cuda_timer my_timer;
 #endif
 
-
     // Reset our "voxels fallen outside" counter
     cudaMemset (dev_ptrs->skipped, 0, dev_ptrs->skipped_size);
     CUDA_check_error ("cudaMemset(): dev_ptrs->skipped");
@@ -1331,7 +1301,7 @@ CUDA_bspline_mse_pt1 (
 
     // Calculate the score and dc_dv
     CUDA_bspline_mse_score_dc_dv (dev_ptrs, bxf, fixed, moving);
-
+    CUDA_check_error("[Kernel Panic!] CUDA_bspline_mse_score_dc_dv");
 
 #if defined (PROFILE_MSE)
     printf("[%f ms] score & dc_dv\n", CUDA_timer_report (&my_timer));
@@ -1592,27 +1562,31 @@ CUDA_bspline_mse_score_dc_dv (
     CUDA_check_error("cudaMemset(): dev_ptrs->dc_dv_z");
 
     int tile_padding = 64 - 
-    ((gbd.vox_per_rgn.x * gbd.vox_per_rgn.y * gbd.vox_per_rgn.z) % 64);
+        ((gbd.vox_per_rgn.x * gbd.vox_per_rgn.y * gbd.vox_per_rgn.z) % 64);
 
     kernel_bspline_mse_score_dc_dv <<<dimGrid1, dimBlock1>>> (
-            dev_ptrs->score,
-            dev_ptrs->skipped,
-            dev_ptrs->dc_dv_x,
-            dev_ptrs->dc_dv_y,
-            dev_ptrs->dc_dv_z,
-            dev_ptrs->fixed_image,
-            dev_ptrs->moving_image,
-            dev_ptrs->moving_grad,
-            gbd.fix_dim,
-            gbd.mov_dim,
-            gbd.rdims,
-            gbd.cdims,
-            gbd.vox_per_rgn,
-            gbd.img_origin,
-            gbd.img_spacing,
-            gbd.mov_origin,
-            gbd.mov_spacing,
-            tile_padding);
+        dev_ptrs->score,
+        dev_ptrs->skipped,
+        dev_ptrs->dc_dv_x,
+        dev_ptrs->dc_dv_y,
+        dev_ptrs->dc_dv_z,
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
+        dev_ptrs->coeff,
+        dev_ptrs->fixed_image,
+        dev_ptrs->moving_image,
+        dev_ptrs->moving_grad,
+        gbd.fix_dim,
+        gbd.mov_dim,
+        gbd.rdims,
+        gbd.cdims,
+        gbd.vox_per_rgn,
+        gbd.img_origin,
+        gbd.img_spacing,
+        gbd.mov_origin,
+        gbd.mov_spacing,
+        tile_padding);
 }
 
 
@@ -1658,6 +1632,9 @@ CUDA_bspline_condense (
         dev_ptrs->cond_x,       // Return: condensed dc_dv_x values
         dev_ptrs->cond_y,       // Return: condensed dc_dv_y values
         dev_ptrs->cond_z,       // Return: condensed dc_dv_z values
+        dev_ptrs->lut_bspline_x,
+        dev_ptrs->lut_bspline_y,
+        dev_ptrs->lut_bspline_z,
         dev_ptrs->dc_dv_x,      // Input : dc_dv_x values
         dev_ptrs->dc_dv_y,      // Input : dc_dv_y values
         dev_ptrs->dc_dv_z,      // Input : dc_dv_z values
@@ -1707,153 +1684,15 @@ CUDA_bspline_reduce (
 ////////////////////////////////////////////////////////////////////////////////
 
 
-// JAS 2010.11.13
-// waiting for the cpu to generate large vector fields after a super fast
-// gpu driven registration was too troublesome.  this stub function is called
-// in the exact same fashion as the cpu equivalent, but is faster. ^_~
-
-// GCS FIX: This function seems not to be used.  We can upgrade it to use
-// the new texture API when we have time.
-#if defined (commentout)
-void
-CUDA_bspline_interpolate_vf (
-    Volume* interp,
-    Bspline_xform* bxf
-)
-{
-    dim3 dimGrid;
-    dim3 dimBlock;
-
-    // Coefficient LUT
-    // N.b. we can't use build_coeff_lut() because we don't have a dev_ptrs
-    // ----------------------------------------------------------
-    Cuda_texture tex_coeff;
-    plm_long coeff_size = sizeof(float) * bxf->num_coeff;
-    tex_coeff.make_and_bind (&coeff_size, bxf->coeff);
-    CUDA_check_error("Failed to bind dev_ptrs->coeff to texture reference!");
-
-
-    // Build B-spline LUTs & attach to textures
-    // ----------------------------------------------------------
-    plm_long LUT_Bspline_x_size = 4*bxf->vox_per_rgn[0]* sizeof(float);
-    plm_long LUT_Bspline_y_size = 4*bxf->vox_per_rgn[1]* sizeof(float);
-    plm_long LUT_Bspline_z_size = 4*bxf->vox_per_rgn[2]* sizeof(float);
-
-    float* LUT_Bspline_x_cpu = (float*)malloc(LUT_Bspline_x_size);
-    float* LUT_Bspline_y_cpu = (float*)malloc(LUT_Bspline_y_size);
-    float* LUT_Bspline_z_cpu = (float*)malloc(LUT_Bspline_z_size);
-
-    for (int j = 0; j < 4; j++)
-    {
-        for (int i = 0; i < bxf->vox_per_rgn[0]; i++) {
-            LUT_Bspline_x_cpu[j*bxf->vox_per_rgn[0] + i] =
-                CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
-        }
-
-        for (int i = 0; i < bxf->vox_per_rgn[1]; i++) {
-            LUT_Bspline_y_cpu[j*bxf->vox_per_rgn[1] + i] =
-                CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
-        }
-
-        for (int i = 0; i < bxf->vox_per_rgn[2]; i++) {
-            LUT_Bspline_z_cpu[j*bxf->vox_per_rgn[2] + i] =
-                CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
-        }
-    }
-
-    float *LUT_Bspline_x, *LUT_Bspline_y, *LUT_Bspline_z;
-
-    CUDA_alloc_copy ((void **)&LUT_Bspline_x,
-                     (void **)&LUT_Bspline_x_cpu,
-                     LUT_Bspline_x_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_x, LUT_Bspline_x, LUT_Bspline_x_size);
-
-    CUDA_alloc_copy ((void **)&LUT_Bspline_y,
-                     (void **)&LUT_Bspline_y_cpu,
-                     LUT_Bspline_y_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_y, LUT_Bspline_y, LUT_Bspline_y_size);
-
-    CUDA_alloc_copy ((void **)&LUT_Bspline_z,
-                     (void **)&LUT_Bspline_z_cpu,
-                     LUT_Bspline_z_size);
-
-    cudaBindTexture(0, tex_LUT_Bspline_z, LUT_Bspline_z, LUT_Bspline_z_size);
-
-    free (LUT_Bspline_x_cpu);
-    free (LUT_Bspline_y_cpu);
-    free (LUT_Bspline_z_cpu);
-
-
-    // Get things ready for the kernel
-    // ---------------------------------------------------------------
-    int3 vol_dim, rdim, cdim, vpr;
-    CUDA_array2vec_int3 (&vol_dim, interp->dim);
-    CUDA_array2vec_int3 (&rdim, bxf->rdims);
-    CUDA_array2vec_int3 (&cdim, bxf->cdims);
-    CUDA_array2vec_int3 (&vpr, bxf->vox_per_rgn);
-
-    plm_long vf_size = interp->npix * 3*sizeof(float);
-
-
-
-    // Kernel setup & execution
-    // ---------------------------------------------------------------
-    int num_blocks = 
-    CUDA_exec_conf_1tpe (
-        &dimGrid,          // OUTPUT: Grid  dimensions
-        &dimBlock,         // OUTPUT: Block dimensions
-        interp->npix,      // INPUT: Total # of threads
-        192,               // INPUT: Threads per block
-        true);             // INPUT: Is threads per block negotiable?
-
-    int tpb = dimBlock.x * dimBlock.y * dimBlock.z;
-
-    size_t sMemSize = tpb * 3*sizeof(float);
-    size_t vf_gpu_size = sMemSize * num_blocks;
-
-    float* vf_gpu;
-    CUDA_alloc_zero ((void**)&vf_gpu, vf_gpu_size, cudaAllocStern);
-
-    kernel_bspline_interpolate_vf <<<dimGrid, dimBlock, sMemSize>>> (
-            vf_gpu,     // out
-            vol_dim,    // in
-            rdim,       // in
-            cdim,       // in
-            vpr         // in
-    );
-
-    cudaDeviceSynchronize();
-    CUDA_check_error("kernel_bspline_interpolate_vf()");
-
-    // notice that we don't copy the "garbage" at the end of gpu memory
-    cudaMemcpy(interp->img, vf_gpu, vf_size, cudaMemcpyDeviceToHost);
-    CUDA_check_error("error copying vf back to CPU");
-
-
-    // Clean up
-    // ---------------------------------------------------------------
-    cudaUnbindTexture(tex_coeff);
-    cudaUnbindTexture(tex_LUT_Bspline_x);
-    cudaUnbindTexture(tex_LUT_Bspline_y);
-    cudaUnbindTexture(tex_LUT_Bspline_z);
-
-    cudaFree(vf_gpu);
-    cudaFree(coeff);
-    cudaFree(LUT_Bspline_x);
-    cudaFree(LUT_Bspline_y);
-    cudaFree(LUT_Bspline_z);
-}
-#endif
-
-
-
 // generates many sub-histograms of the fixed image
 __global__ void
 kernel_bspline_mi_hist_fix (
     float* f_hist_seg,  // partial histogram (moving image)
     float* f_img,       // moving image voxels
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     float offset,       // histogram offset
     float delta,        // histogram delta
     long bins,          // # histogram bins
@@ -1895,7 +1734,8 @@ kernel_bspline_mi_hist_fix (
             fv, fdim, vpr, rdim, img_origin, img_spacing);
 
         int fell_out = find_correspondence (&d, &m, &n,
-            f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
+            lut_bspline_x, lut_bspline_y, lut_bspline_z,
+            coeff, f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
 
         // accumulate into segmented histograms
         int idx_fbin;
@@ -1978,6 +1818,10 @@ __global__ void
 kernel_bspline_mi_hist_mov (
     float* m_hist_seg,  // partial histogram (moving image)
     float* m_img,       // moving image voxels
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     float offset,       // histogram offset
     float delta,        // histogram delta
     long bins,          // # histogram bins
@@ -2024,7 +1868,8 @@ kernel_bspline_mi_hist_mov (
 
 
         int fell_out = find_correspondence (&d, &m, &n,
-                f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
+            lut_bspline_x, lut_bspline_y, lut_bspline_z,
+            coeff, f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
 
         if (!fell_out) {
             float3 li_1, li_2;
@@ -2090,6 +1935,10 @@ __global__ void
 kernel_bspline_mi_hist_jnt (
     unsigned int* skipped,  // OUTPUT:   # of skipped voxels
     float* j_hist,          // OUTPUT:  joint histogram
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     float* f_img,           // INPUT:  fixed image voxels
     float* m_img,           // INPUT: moving image voxels
     float f_offset,         // INPUT:  fixed histogram offset 
@@ -2144,10 +1993,11 @@ kernel_bspline_mi_hist_jnt (
         fv = thread_idx_global;
 
         setup_indices (&p, &q, &f,
-                fv, fdim, vpr, rdim, img_origin, img_spacing);
+            fv, fdim, vpr, rdim, img_origin, img_spacing);
 
         int fell_out = find_correspondence (&d, &m, &n,
-                f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
+            lut_bspline_x, lut_bspline_y, lut_bspline_z,
+            coeff, f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
 
         // did the voxel map into the moving image?
         if (fell_out) {
@@ -2174,7 +2024,7 @@ kernel_bspline_mi_hist_jnt (
 
             // Maybe one day nvcc will be smart enough to honor this pragma...
             // regardless, manual unrolling doesn't offer any visible speedup
-            #pragma unroll
+#pragma unroll
             for (int i=0; i<8; i++) {
                 idx_mbin = (int) floorf ((m_img[nn[i]] - m_offset) * m_delta);
                 idx_jbin = offset_fbin + idx_mbin;
@@ -2286,6 +2136,10 @@ kernel_bspline_mi_dc_dv (
     float* dc_dv_x,     // OUTPUT: dC / dv (x-component)
     float* dc_dv_y,     // OUTPUT: dC / dv (y-component)
     float* dc_dv_z,     // OUTPUT: dC / dv (z-component)
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     float* f_hist,      // INPUT:  fixed histogram
     float* m_hist,      // INPUT: moving histogram
     float* j_hist,      // INPUT:  joint histogram
@@ -2344,7 +2198,7 @@ kernel_bspline_mi_dc_dv (
     r.x = fv - r.z * fdim.x * fdim.y - (r.y * fdim.x);
     
     setup_indices (&p, &q, &f,
-            fv, fdim, vpr, rdim, img_origin, img_spacing);
+        fv, fdim, vpr, rdim, img_origin, img_spacing);
 
     if (r.x > (roi_offset.x + roi_dim.x) ||
         r.y > (roi_offset.y + roi_dim.y) ||
@@ -2354,7 +2208,8 @@ kernel_bspline_mi_dc_dv (
     }
 
     int fell_out = find_correspondence (&d, &m, &n,
-            f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
+        lut_bspline_x, lut_bspline_y, lut_bspline_z,
+        coeff, f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
 
     if (fell_out) {
         return;
@@ -2486,10 +2341,6 @@ kernel_bspline_mi_dc_dv (
         dc_dv.y -= dw[7].y * dS_dP;
         dc_dv.z -= dw[7].z * dS_dP;
     }
-#if defined (commentout)
-#endif
-    // --------------------------------------------------------
-
 
     // -- Convert from voxels to mm ---------------------------
     dc_dv.x = dc_dv.x / mov_ps.x / num_vox_f;
@@ -2557,6 +2408,10 @@ kernel_bspline_mse_score_dc_dv (
     float* dc_dv_x,     // OUTPUT
     float* dc_dv_y,     // OUTPUT
     float* dc_dv_z,     // OUTPUT
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     float* f_img,       // fixed image voxels
     float* m_img,       // moving image voxels
     float* m_grad,      // moving image gradient
@@ -2591,10 +2446,11 @@ kernel_bspline_mse_score_dc_dv (
     fv = thread_idx_global;
 
     setup_indices (&p, &q, &f,
-            fv, fdim, vpr, rdim, img_origin, img_spacing);
+        fv, fdim, vpr, rdim, img_origin, img_spacing);
 
     int fell_out = find_correspondence (&d, &m, &n,
-            f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
+        lut_bspline_x, lut_bspline_y, lut_bspline_z,
+        coeff, f, mov_origin, mov_ps, mdim, cdim, vpr, p, q);
 
     if (fell_out) {
         skipped[fv]++;
@@ -2604,13 +2460,13 @@ kernel_bspline_mse_score_dc_dv (
     float3 li_1, li_2;
     clamp_linear_interpolate_3d (&n, &n_f, &n_r, &li_1, &li_2, mdim);
 
-    float m_val = get_moving_value (n_f, mdim, li_1, li_2);
+    float m_val = get_moving_value (m_img, n_f, mdim, li_1, li_2);
 
     float diff = m_val - f_img[fv];
     score[fv] = diff * diff;
 
     write_dc_dv (dc_dv_x, dc_dv_y, dc_dv_z,
-            m_grad, diff, n_r, mdim, vpr, pad, p, q);
+        m_grad, diff, n_r, mdim, vpr, pad, p, q);
 }
 
 
@@ -2638,17 +2494,20 @@ kernel_bspline_mse_score_dc_dv (
  */
 __global__ void
 kernel_bspline_condense (
-    float* cond_x,          // Return: condensed dc_dv_x values
-    float* cond_y,          // Return: condensed dc_dv_y values
-    float* cond_z,          // Return: condensed dc_dv_z values
-    float* dc_dv_x,         // Input : dc_dv_x values
-    float* dc_dv_y,         // Input : dc_dv_y values
-    float* dc_dv_z,         // Input : dc_dv_z values
-    int* LUT_Tile_Offsets,  // Input : tile offsets
-    int* LUT_Knot,          // Input : linear knot indicies
-    int pad,                // Input : amount of tile padding
-    int4 tile_dim,          // Input : dims of tiles
-    float one_over_six)     // Input : Precomputed (GPU division is slow)
+    float* cond_x,           // Return: condensed dc_dv_x values
+    float* cond_y,           // Return: condensed dc_dv_y values
+    float* cond_z,           // Return: condensed dc_dv_z values
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float* dc_dv_x,          // Input : dc_dv_x values
+    float* dc_dv_y,          // Input : dc_dv_y values
+    float* dc_dv_z,          // Input : dc_dv_z values
+    int* LUT_Tile_Offsets,   // Input : tile offsets
+    int* LUT_Knot,           // Input : linear knot indicies
+    int pad,                 // Input : amount of tile padding
+    int4 tile_dim,           // Input : dims of tiles
+    float one_over_six)      // Input : Precomputed (GPU division is slow)
 {
     int tileOffset;
     int voxel_cluster;
@@ -2657,7 +2516,6 @@ kernel_bspline_condense (
     int3 voxel_loc;
     int4 tile_pos;
     float A,B,C;
-
 
     // -- Setup Shared Memory ---------------------------------
     // -- SIZE: 9*64*sizeof(float)
@@ -2714,11 +2572,10 @@ kernel_bspline_condense (
 
         for (tile_pos.z = 0; tile_pos.z < 4; tile_pos.z++)
         {
-            //C = tex1D<float>(grad_x, mx+0.5, my+0.5, mz+0.5);
-            C = tex1Dfetch(tex_LUT_Bspline_z, tile_pos.z * tile_dim.z + voxel_loc.z);
+            C = lut_bspline_z[tile_pos.z * tile_dim.z + voxel_loc.z];
             for (tile_pos.y = 0; tile_pos.y < 4; tile_pos.y++)
             {
-                B = C * tex1Dfetch(tex_LUT_Bspline_y, tile_pos.y * tile_dim.y + voxel_loc.y);
+                B = C * lut_bspline_y[tile_pos.y * tile_dim.y + voxel_loc.y];
                 tile_pos.x = 0;
 
                 // #### FIRST HALF ####
@@ -2730,7 +2587,7 @@ kernel_bspline_condense (
                 // Calculate the b-spline multiplier for this voxel @ this tile
                 // position relative to a given control knot.
                 // ---------------------------------------------------------------------------------
-                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                A = B * lut_bspline_x[tile_pos.x * tile_dim.x + voxel_loc.x];
 
                 // Perform the multiplication and store to redux shared memory
                 sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
@@ -2740,7 +2597,7 @@ kernel_bspline_condense (
 
                 // Calculate the b-spline multiplier for this voxel @ the next tile
                 // position relative to a given control knot.
-                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                A = B * lut_bspline_x[tile_pos.x * tile_dim.x + voxel_loc.x];
 
                 // Perform the multiplication and store to redux shared memory
                 // for the second position
@@ -2854,7 +2711,7 @@ kernel_bspline_condense (
                 // blocks of shared memory for reduction
                 // ---------------------------------------------------------------------------------
                 tile_pos.x++;
-                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                A = B * lut_bspline_x[tile_pos.x * tile_dim.x + voxel_loc.x];
 
                 // Perform the multiplication and store to redux shared memory
                 sBuffer_redux_x[threadIdx.x] = voxel_val.x * A;
@@ -2864,7 +2721,7 @@ kernel_bspline_condense (
 
                 // Calculate the b-spline multiplier for this voxel @ the next tile
                 // position relative to a given control knot.
-                A = B * tex1Dfetch(tex_LUT_Bspline_x, tile_pos.x * tile_dim.x + voxel_loc.x);
+                A = B * lut_bspline_x[tile_pos.x * tile_dim.x + voxel_loc.x];
 
                 // Perform the multiplication and store to redux shared memory
                 // for the second position
@@ -3109,6 +2966,10 @@ kernel_bspline_grad_normalize (
 __global__ void
 kernel_bspline_interpolate_vf (
     float* vf,          // OUTPUT
+    float *lut_bspline_x,
+    float *lut_bspline_y,
+    float *lut_bspline_z,
+    float *coeff,
     int3 fdim,          // fixed  image dimensions
     int3 rdim,          //       region dimensions
     int3 cdim,          // # control points in x,y,z
@@ -3129,10 +2990,9 @@ kernel_bspline_interpolate_vf (
         fv = thread_idx_global;
 
         setup_indices (&p, &q, &f,
-                fv, fdim, vpr, rdim, null, null);
+            fv, fdim, vpr, rdim, null, null);
 
-        bspline_interpolate (&d, cdim, vpr, p, q);
-
+        bspline_interpolate (&d, lut_bspline_x, lut_bspline_y, lut_bspline_z, coeff, cdim, vpr, p, q);
         shared_mem[3*threadIdx.x + 0] = d.x;
         shared_mem[3*threadIdx.x + 1] = d.y;
         shared_mem[3*threadIdx.x + 2] = d.z;
@@ -3444,21 +3304,25 @@ clamp_linear_interpolate_3d (
 
 __device__ inline int
 find_correspondence (
-   float3 *d,
-   float3 *m,
-   float3 *n,
-   float3 f,
-   float3 mov_origin,
-   float3 mov_ps,
-   int3 mdim,
-   int3 cdim,
-   int3 vpr,
-   int4 p,
-   int4 q
+    float3 *d,
+    float3 *m,
+    float3 *n,
+    float* lut_bspline_x,
+    float* lut_bspline_y,
+    float* lut_bspline_z,
+    float* coeff,
+    float3 f,
+    float3 mov_origin,
+    float3 mov_ps,
+    int3 mdim,
+    int3 cdim,
+    int3 vpr,
+    int4 p,
+    int4 q
 )
 {
     // -- Get the deformation vector d ------------------------
-    bspline_interpolate (d, cdim, vpr, p, q);
+    bspline_interpolate (d, lut_bspline_x, lut_bspline_y, lut_bspline_z, coeff, cdim, vpr, p, q);
 
     // -- Correspondence --------------------------------------
     m->x = f.x + d->x;  // Displacement in mm
@@ -3483,6 +3347,7 @@ find_correspondence (
 
 __device__ inline float
 get_moving_value (
+    float *moving,
     int3 n_f,
     int3 mdim,
     float3 li_1,
@@ -3498,14 +3363,14 @@ get_moving_value (
     float w[8];
     get_weights (w, li_1, li_2);
 
-    w[0] *= tex1Dfetch(tex_moving_image, nn[0]);
-    w[1] *= tex1Dfetch(tex_moving_image, nn[1]);
-    w[2] *= tex1Dfetch(tex_moving_image, nn[2]);
-    w[3] *= tex1Dfetch(tex_moving_image, nn[3]);
-    w[4] *= tex1Dfetch(tex_moving_image, nn[4]);
-    w[5] *= tex1Dfetch(tex_moving_image, nn[5]);
-    w[6] *= tex1Dfetch(tex_moving_image, nn[6]);
-    w[7] *= tex1Dfetch(tex_moving_image, nn[7]);
+    w[0] *= moving[nn[0]];
+    w[1] *= moving[nn[1]];
+    w[2] *= moving[nn[2]];
+    w[3] *= moving[nn[3]];
+    w[4] *= moving[nn[4]];
+    w[5] *= moving[nn[5]];
+    w[6] *= moving[nn[6]];
+    w[7] *= moving[nn[7]];
 
     return w[0] + w[1] + w[2] + w[3] + w[4] + w[5] + w[6] + w[7];
     // --------------------------------------------------------
@@ -3668,6 +3533,10 @@ get_weight_derivatives (
 __device__ inline void
 bspline_interpolate (
     float3* d,
+    float* lut_bspline_x,
+    float* lut_bspline_y,
+    float* lut_bspline_z,
+    float* coeff,
     int3 cdim,
     int3 vpr,
     int4 p,
@@ -3683,19 +3552,19 @@ bspline_interpolate (
 
     z = 0;
     for (k = 0; k < 4; k++) {
-    C = tex1Dfetch (tex_LUT_Bspline_z, k * vpr.z + q.z);
+        C = lut_bspline_z[k * vpr.z + q.z];
         for (j = 0; j < 4; j++) {
-        B = tex1Dfetch (tex_LUT_Bspline_y, j * vpr.y + q.y);
+            B = lut_bspline_y[j * vpr.y + q.y];
             for (i = 0; i < 4; i++) {
-                A = tex1Dfetch (tex_LUT_Bspline_x, i * vpr.x + q.x);
+                A = lut_bspline_x[i * vpr.x + q.x];
                 P = A * B * C;
 
                 cidx = 3 * ((p.z + k) * cdim.x * cdim.y 
-                            + (p.y + j) * cdim.x + (p.x + i));
+                    + (p.y + j) * cdim.x + (p.x + i));
 
-                d->x += P * tex1Dfetch (tex_coeff, cidx + 0);
-                d->y += P * tex1Dfetch (tex_coeff, cidx + 1);
-                d->z += P * tex1Dfetch (tex_coeff, cidx + 2);
+                d->x += P * coeff[cidx + 0];
+                d->y += P * coeff[cidx + 1];
+                d->z += P * coeff[cidx + 2];
 
                 z++;
             }

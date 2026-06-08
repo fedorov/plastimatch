@@ -37,6 +37,9 @@ struct gpu_bspline_data
         float* cond_x,          // Return: condensed dc_dv_x values
         float* cond_y,          // Return: condensed dc_dv_y values
         float* cond_z,          // Return: condensed dc_dv_z values
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
         float* dc_dv_x,         // Input : dc_dv_x values
         float* dc_dv_y,         // Input : dc_dv_y values
         float* dc_dv_z,         // Input : dc_dv_z values
@@ -66,6 +69,10 @@ struct gpu_bspline_data
     __global__ void
     kernel_bspline_interpolate_vf (
         float* vf,
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         int3 fdim,
         int3 rdim,
         int3 cdim,
@@ -90,6 +97,10 @@ struct gpu_bspline_data
     kernel_bspline_mi_hist_fix (
         float* f_hist_seg,  // partial histogram (fixed image)
         float* f_img,       // moving image voxels
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         float offset,       // histogram offset
         float delta,        // histogram delta
         long bins,          // # histogram bins
@@ -108,6 +119,10 @@ struct gpu_bspline_data
     kernel_bspline_mi_hist_mov (
         float* m_hist_seg,  // partial histogram (moving image)
         float* m_img,       // moving image voxels
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         float offset,       // histogram offset
         float delta,        // histogram delta
         long bins,          // # histogram bins
@@ -126,6 +141,10 @@ struct gpu_bspline_data
     kernel_bspline_mi_hist_jnt (
         unsigned int* skipped,  // OUTPUT:   # of skipped voxels
         float* j_hist,          // OUTPUT:  joint histogram
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         float* f_img,           // INPUT:  fixed image voxels
         float* m_img,           // INPUT: moving image voxels
         float f_offset,         // INPUT:  fixed histogram offset 
@@ -158,6 +177,10 @@ struct gpu_bspline_data
         float* dc_dv_x,     // OUTPUT: dC / dv (x-component)
         float* dc_dv_y,     // OUTPUT: dC / dv (y-component)
         float* dc_dv_z,     // OUTPUT: dC / dv (z-component)
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         float* f_hist,      // INPUT:  fixed histogram
         float* m_hist,      // INPUT: moving histogram
         float* j_hist,      // INPUT:  joint histogram
@@ -192,6 +215,10 @@ struct gpu_bspline_data
         float* dc_dv_x,     // OUTPUT
         float* dc_dv_y,     // OUTPUT
         float* dc_dv_z,     // OUTPUT
+        float *lut_bspline_x,
+        float *lut_bspline_y,
+        float *lut_bspline_z,
+        float *coeff,
         float* f_img,       // fixed image voxels
         float* m_img,       // moving image voxels
         float* m_grad,      // moving image gradient
@@ -218,21 +245,26 @@ struct gpu_bspline_data
 
     __device__ inline int
     find_correspondence (
-       float3 *d,
-       float3 *m,
-       float3 *n,
-       float3 f,
-       float3 mov_origin,
-       float3 mov_ps,
-       int3 mdim,
-       int3 cdim,
-       int3 vpr,
-       int4 p,
-       int4 q
+        float3 *d,
+        float3 *m,
+        float3 *n,
+        float* lut_bspline_x,
+        float* lut_bspline_y,
+        float* lut_bspline_z,
+        float* coeff,
+        float3 f,
+        float3 mov_origin,
+        float3 mov_ps,
+        int3 mdim,
+        int3 cdim,
+        int3 vpr,
+        int4 p,
+        int4 q
     );
 
     __device__ inline float
     get_moving_value (
+        float *moving,
         int3 n_f,
         int3 mdim,
         float3 li_1,
@@ -291,6 +323,10 @@ struct gpu_bspline_data
     __device__ inline void
     bspline_interpolate (
         float3* d,
+        float* lut_bspline_x,
+        float* lut_bspline_y,
+        float* lut_bspline_z,
+        float* coeff,
         int3 cdim,
         int3 vpr,
         int4 p,

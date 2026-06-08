@@ -16,7 +16,6 @@
 #include <cuda.h>
 
 #include "cuda_mem.h"
-#include "cuda_texture.h"
 #include "delayload.h"
 #include "plm_int.h"
 
@@ -38,17 +37,6 @@ class Bspline_state;
 class Bspline_xform;
 class Volume;
 
-/* Texture Memory */
-class Bspline_cuda_state {
-public:
-    Cuda_texture fixed;
-    Cuda_texture moving;
-    Cuda_texture tex_coeff;
-    Cuda_texture tex_lut_bspline_x;
-    Cuda_texture tex_lut_bspline_y;
-    Cuda_texture tex_lut_bspline_z;
-};
-
 class Dev_pointers_bspline
 {
 public:
@@ -58,8 +46,6 @@ public:
     // MEMORY!  Care must be taken when referencing
     // and dereferencing members of this structure!
 
-    Bspline_cuda_state bcstate;
-    
     float* fixed_image;     // Fixed Image Voxels
     float* moving_image;    // Moving Image Voxels
     float* moving_grad;     // dc_dp (Gradient) Volume
@@ -87,9 +73,14 @@ public:
 
     int* LUT_Knot;          // Control Point LUT
     int* LUT_Offsets;       // Tile Offset LUT
+#if defined (commentout)
     float* LUT_Bspline_x;   // Pre-computed Bspline evaluations
     float* LUT_Bspline_y;   // ------------ '' ----------------
     float* LUT_Bspline_z;   // ------------ '' ----------------
+#endif
+    float *lut_bspline_x;
+    float *lut_bspline_y;
+    float *lut_bspline_z;
 
     // # of voxels that do not have a correspondence
     float* skipped;                 // Legacy (for GPU w/o atomics)
@@ -128,9 +119,9 @@ public:
 
     plm_long LUT_Knot_size;
     plm_long LUT_Offsets_size;
-    plm_long LUT_Bspline_x_size;
-    plm_long LUT_Bspline_y_size;
-    plm_long LUT_Bspline_z_size;
+    size_t LUT_Bspline_x_size;
+    size_t LUT_Bspline_y_size;
+    size_t LUT_Bspline_z_size;
     plm_long skipped_size;
 };
 
