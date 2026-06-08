@@ -71,13 +71,8 @@ public:
     float* m_hist;          // moving image histogram
     float* j_hist;          // joint histogram
 
-    int* LUT_Knot;          // Control Point LUT
-    int* LUT_Offsets;       // Tile Offset LUT
-#if defined (commentout)
-    float* LUT_Bspline_x;   // Pre-computed Bspline evaluations
-    float* LUT_Bspline_y;   // ------------ '' ----------------
-    float* LUT_Bspline_z;   // ------------ '' ----------------
-#endif
+    int* lut_knot;          // Control Point LUT
+    int* lut_offsets;       // Tile Offset LUT
     float *lut_bspline_x;
     float *lut_bspline_y;
     float *lut_bspline_z;
@@ -117,11 +112,11 @@ public:
     plm_long m_hist_size;
     plm_long j_hist_size;
 
-    plm_long LUT_Knot_size;
-    plm_long LUT_Offsets_size;
-    size_t LUT_Bspline_x_size;
-    size_t LUT_Bspline_y_size;
-    size_t LUT_Bspline_z_size;
+    plm_long lut_knot_size;
+    plm_long lut_offsets_size;
+    size_t lut_bspline_x_size;
+    size_t lut_bspline_y_size;
+    size_t lut_bspline_z_size;
     plm_long skipped_size;
 };
 

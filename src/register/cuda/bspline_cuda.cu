@@ -63,41 +63,47 @@ build_bspline_luts (
     long unsigned* GPU_Memory_Bytes
 )
 {
-    dev_ptrs->LUT_Bspline_x_size = 4 * bxf->vox_per_rgn[0] * sizeof(float);
-    dev_ptrs->LUT_Bspline_y_size = 4 * bxf->vox_per_rgn[1] * sizeof(float);
-    dev_ptrs->LUT_Bspline_z_size = 4 * bxf->vox_per_rgn[2] * sizeof(float);
-    float* LUT_Bspline_x = (float*) malloc (dev_ptrs->LUT_Bspline_x_size);
-    float* LUT_Bspline_y = (float*) malloc (dev_ptrs->LUT_Bspline_y_size);
-    float* LUT_Bspline_z = (float*) malloc (dev_ptrs->LUT_Bspline_z_size);
+    dev_ptrs->lut_bspline_x_size = 4 * bxf->vox_per_rgn[0] * sizeof(float);
+    dev_ptrs->lut_bspline_y_size = 4 * bxf->vox_per_rgn[1] * sizeof(float);
+    dev_ptrs->lut_bspline_z_size = 4 * bxf->vox_per_rgn[2] * sizeof(float);
+    float* lut_bspline_x_cpu = (float*) malloc (dev_ptrs->lut_bspline_x_size);
+    float* lut_bspline_y_cpu = (float*) malloc (dev_ptrs->lut_bspline_y_size);
+    float* lut_bspline_z_cpu = (float*) malloc (dev_ptrs->lut_bspline_z_size);
 
     for (int j = 0; j < 4; j++) {
         for (int i = 0; i < bxf->vox_per_rgn[0]; i++) {
-            LUT_Bspline_x[j*bxf->vox_per_rgn[0] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
+            lut_bspline_x_cpu[j*bxf->vox_per_rgn[0] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[0]);
         }
 
         for (int i = 0; i < bxf->vox_per_rgn[1]; i++) {
-            LUT_Bspline_y[j*bxf->vox_per_rgn[1] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
+            lut_bspline_y_cpu[j*bxf->vox_per_rgn[1] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[1]);
         }
 
         for (int i = 0; i < bxf->vox_per_rgn[2]; i++) {
-            LUT_Bspline_z[j*bxf->vox_per_rgn[2] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
+            lut_bspline_z_cpu[j*bxf->vox_per_rgn[2] + i] = CPU_obtain_bspline_basis_function (j, i, bxf->vox_per_rgn[2]);
         }
     }
 
-    cudaMalloc (&dev_ptrs->lut_bspline_x, dev_ptrs->LUT_Bspline_x_size);
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_bspline_x,
+        (void **)&lut_bspline_x_cpu,
+        dev_ptrs->lut_bspline_x_size);
     printf(".");
-    cudaMalloc (&dev_ptrs->lut_bspline_y, dev_ptrs->LUT_Bspline_y_size);
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_bspline_y,
+        (void **)&lut_bspline_y_cpu,
+        dev_ptrs->lut_bspline_y_size);
     printf(".");
-    cudaMalloc (&dev_ptrs->lut_bspline_z, dev_ptrs->LUT_Bspline_z_size);
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_bspline_z,
+        (void **)&lut_bspline_z_cpu,
+        dev_ptrs->lut_bspline_z_size);
     printf(".");
 
-    *GPU_Memory_Bytes += dev_ptrs->LUT_Bspline_x_size
-        + dev_ptrs->LUT_Bspline_y_size
-        + dev_ptrs->LUT_Bspline_z_size;
+    *GPU_Memory_Bytes += dev_ptrs->lut_bspline_x_size
+        + dev_ptrs->lut_bspline_y_size
+        + dev_ptrs->lut_bspline_z_size;
 
-    free (LUT_Bspline_x);
-    free (LUT_Bspline_y);
-    free (LUT_Bspline_z);
+    free (lut_bspline_x_cpu);
+    free (lut_bspline_y_cpu);
+    free (lut_bspline_z_cpu);
 }
 
 void
@@ -283,13 +289,13 @@ CUDA_bspline_mi_init_a (
     int* offsets = CPU_calc_offsets (bxf->vox_per_rgn, bxf->cdims);
     int num_tiles = (bxf->cdims[0]-3) * (bxf->cdims[1]-3) * (bxf->cdims[2]-3);
 
-    dev_ptrs->LUT_Offsets_size = num_tiles*sizeof(int);
+    dev_ptrs->lut_offsets_size = num_tiles*sizeof(int);
 
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Offsets,
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_offsets,
                     (void **)&offsets,
-                    dev_ptrs->LUT_Offsets_size);
+                    dev_ptrs->lut_offsets_size);
 
-    GPU_Memory_Bytes += dev_ptrs->LUT_Offsets_size;
+    GPU_Memory_Bytes += dev_ptrs->lut_offsets_size;
     printf(".");
 
     free (offsets);
@@ -298,28 +304,28 @@ CUDA_bspline_mi_init_a (
 
     // Control Point (Knot) LUT
     // ----------------------------------------------------------
-    dev_ptrs->LUT_Knot_size = 64*num_tiles*sizeof(int);
+    dev_ptrs->lut_knot_size = 64*num_tiles*sizeof(int);
 
     int* local_set_of_64 = (int*)malloc(64*sizeof(int));
-    int* LUT_Knot = (int*)malloc(dev_ptrs->LUT_Knot_size);
+    int* lut_knot = (int*)malloc(dev_ptrs->lut_knot_size);
 
     int i,j;
     for (i = 0; i < num_tiles; i++)
     {
         CPU_find_knots(local_set_of_64, i, bxf->rdims, bxf->cdims);
         for (j = 0; j < 64; j++) {
-            LUT_Knot[64*i + j] = local_set_of_64[j];
+            lut_knot[64*i + j] = local_set_of_64[j];
         }
     }
 
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Knot,
-                    (void **)&LUT_Knot,
-                    dev_ptrs->LUT_Knot_size);
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_knot,
+                    (void **)&lut_knot,
+                    dev_ptrs->lut_knot_size);
 
     free (local_set_of_64);
-    free (LUT_Knot);
+    free (lut_knot);
 
-    GPU_Memory_Bytes += dev_ptrs->LUT_Knot_size;
+    GPU_Memory_Bytes += dev_ptrs->lut_knot_size;
     printf (".");
     // ----------------------------------------------------------
 
@@ -352,11 +358,11 @@ CUDA_bspline_mi_init_a (
     printf ("         c-lut: %i KB\n", dev_ptrs->c_lut_size / 1024);
     printf ("     coeff-lut: %i KB\n", dev_ptrs->coeff_size / 1024);
     printf ("      Gradient: %i KB\n", dev_ptrs->grad_size / 1024);
-    printf ("  Tile Offsets: %i KB\n", dev_ptrs->LUT_Offsets_size / 1024);
-    printf ("      Knot LUT: %i KB\n", dev_ptrs->LUT_Knot_size / 1024);
-    printf ("B-spline LUT-x: %i KB\n", dev_ptrs->LUT_Bspline_x_size / 1024);
-    printf ("B-spline LUT-y: %i KB\n", dev_ptrs->LUT_Bspline_y_size / 1024);
-    printf ("B-spline LUT-z: %i KB\n", dev_ptrs->LUT_Bspline_z_size / 1024);
+    printf ("  Tile Offsets: %i KB\n", dev_ptrs->lut_offsets_size / 1024);
+    printf ("      Knot LUT: %i KB\n", dev_ptrs->lut_knot_size / 1024);
+    printf ("B-spline LUT-x: %i KB\n", dev_ptrs->lut_bspline_x_size / 1024);
+    printf ("B-spline LUT-y: %i KB\n", dev_ptrs->lut_bspline_y_size / 1024);
+    printf ("B-spline LUT-z: %i KB\n", dev_ptrs->lut_bspline_z_size / 1024);
     printf ("---------------------------\n");
 #endif
 }
@@ -513,12 +519,12 @@ CUDA_bspline_mse_init_j (
     int* offsets = CPU_calc_offsets(bxf->vox_per_rgn, bxf->cdims);
     int num_tiles = (bxf->cdims[0]-3) * (bxf->cdims[1]-3) * (bxf->cdims[2]-3);
 
-    dev_ptrs->LUT_Offsets_size = num_tiles*sizeof(int);
+    dev_ptrs->lut_offsets_size = num_tiles*sizeof(int);
 
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Offsets,
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_offsets,
                     (void **)&offsets,
-                    dev_ptrs->LUT_Offsets_size);
-    GPU_Memory_Bytes += dev_ptrs->LUT_Offsets_size;
+                    dev_ptrs->lut_offsets_size);
+    GPU_Memory_Bytes += dev_ptrs->lut_offsets_size;
     printf(".");
 
     free (offsets);
@@ -527,28 +533,28 @@ CUDA_bspline_mse_init_j (
 
     // Control Point (Knot) LUT
     // ----------------------------------------------------------
-    dev_ptrs->LUT_Knot_size = 64*num_tiles*sizeof(int);
+    dev_ptrs->lut_knot_size = 64*num_tiles*sizeof(int);
 
     int* local_set_of_64 = (int*)malloc(64*sizeof(int));
-    int* LUT_Knot = (int*)malloc(dev_ptrs->LUT_Knot_size);
+    int* lut_knot = (int*)malloc(dev_ptrs->lut_knot_size);
 
     int i,j;
     for (i = 0; i < num_tiles; i++)
     {
         CPU_find_knots(local_set_of_64, i, bxf->rdims, bxf->cdims);
         for (j = 0; j < 64; j++) {
-            LUT_Knot[64*i + j] = local_set_of_64[j];
+            lut_knot[64*i + j] = local_set_of_64[j];
         }
     }
 
-    CUDA_alloc_copy ((void **)&dev_ptrs->LUT_Knot,
-                    (void **)&LUT_Knot,
-                    dev_ptrs->LUT_Knot_size);
+    CUDA_alloc_copy ((void **)&dev_ptrs->lut_knot,
+                    (void **)&lut_knot,
+                    dev_ptrs->lut_knot_size);
 
     free (local_set_of_64);
-    free (LUT_Knot);
+    free (lut_knot);
 
-    GPU_Memory_Bytes += dev_ptrs->LUT_Knot_size;
+    GPU_Memory_Bytes += dev_ptrs->lut_knot_size;
     printf (".");
     // ----------------------------------------------------------
 
@@ -616,8 +622,8 @@ CUDA_bspline_mse_cleanup_j (
     cudaFree(dev_ptrs->dc_dv_x);
     cudaFree(dev_ptrs->dc_dv_y);
     cudaFree(dev_ptrs->dc_dv_z);
-    cudaFree(dev_ptrs->LUT_Offsets);
-    cudaFree(dev_ptrs->LUT_Knot);
+    cudaFree(dev_ptrs->lut_offsets);
+    cudaFree(dev_ptrs->lut_knot);
     cudaFree(dev_ptrs->cond_x);
     cudaFree(dev_ptrs->cond_y);
     cudaFree(dev_ptrs->cond_z);
@@ -654,8 +660,8 @@ CUDA_bspline_mi_cleanup_a (
     cudaFree(dev_ptrs->cond_x);
     cudaFree(dev_ptrs->cond_y);
     cudaFree(dev_ptrs->cond_z);
-    cudaFree(dev_ptrs->LUT_Offsets);
-    cudaFree(dev_ptrs->LUT_Knot);
+    cudaFree(dev_ptrs->lut_offsets);
+    cudaFree(dev_ptrs->lut_knot);
 }
 
 
@@ -1254,7 +1260,6 @@ CUDA_bspline_mi_grad (
     // --- RETREIVE THE GRAD FROM GPU ---------------------------
     cudaMemcpy(host_grad, dev_ptrs->grad, sizeof(float) * bxf->num_coeff, cudaMemcpyDeviceToHost);
     CUDA_check_error("Failed to copy dev_ptrs->grad to CPU");
-    CUDA_check_error("Failed to copy dev_ptrs->grad to CPU");
     // ----------------------------------------------------------
 }
 
@@ -1638,8 +1643,8 @@ CUDA_bspline_condense (
         dev_ptrs->dc_dv_x,      // Input : dc_dv_x values
         dev_ptrs->dc_dv_y,      // Input : dc_dv_y values
         dev_ptrs->dc_dv_z,      // Input : dc_dv_z values
-        dev_ptrs->LUT_Offsets,  // Input : tile offsets
-        dev_ptrs->LUT_Knot,     // Input : linear knot indicies
+        dev_ptrs->lut_offsets,  // Input : tile offsets
+        dev_ptrs->lut_knot,     // Input : linear knot indicies
         pad,                    // Input : amount of tile padding
         vox_per_region,         // Input : dims of tiles
         (float)1/6);            // Input : GPU Division is slow
@@ -2375,18 +2380,18 @@ kernel_bspline_mi_dc_dv (
  * This kernel was written as an intended replacement for
  * bspline_cuda_score_j_mse_kernel1().  The intended goal
  * was to produce a kernel with neater notation and code
- * structure that also shared the LUT_Bspline_x,y,z textured
+ * structure that also shared the lut_bspline_x,y,z textured
  * lookup table that is utilized by the hyper-fast gradient
  * kernel kernel_bspline_condense ().
  * 
- * It should be noted that the LUT_Bspline texture differs
+ * It should be noted that the lut_bspline texture differs
  * from the CPU based q_lut in both structure and philosophy.
- * LUT_Bspline is three separate look-up-tables which contain
+ * lut_bspline is three separate look-up-tables which contain
  * the pre-computed basis function values in each dimension,
  * whereas the q_lut has already pre-multiplied all of these
  * results.  For the GPU, the q-LUT requires in too many memory
  * load operations, even when employing the cacheing mechanisms
- * provided by textures.  The LUT_Bspline textures rely on the GPU
+ * provided by textures.  The lut_bspline textures rely on the GPU
  * to perform these multiplications, thus achieving superior
  * run times.
  *
@@ -2485,7 +2490,7 @@ kernel_bspline_mse_score_dc_dv (
  * @param dc_dv_y Pointer to dc_dv y-values
  * @param dc_dv_z Pointer to dc_dv z-values
  * @param LUT_Tile_Offsets Pointer to offset lookup table
- * @param LUT_Knot Pointer to linear knot indices
+ * @param lut_knot Pointer to linear knot indices
  * @param pad Amount of tile padding, in bytes
  * @param tile_dim Dimensions of input volume tiles
  * @param one_over_six The value 1/6
@@ -2504,7 +2509,7 @@ kernel_bspline_condense (
     float* dc_dv_y,          // Input : dc_dv_y values
     float* dc_dv_z,          // Input : dc_dv_z values
     int* LUT_Tile_Offsets,   // Input : tile offsets
-    int* LUT_Knot,           // Input : linear knot indicies
+    int* lut_knot,           // Input : linear knot indicies
     int pad,                 // Input : amount of tile padding
     int4 tile_dim,           // Input : dims of tiles
     float one_over_six)      // Input : Precomputed (GPU division is slow)
@@ -2848,7 +2853,7 @@ kernel_bspline_condense (
 
     int knot_num;
 
-    knot_num = LUT_Knot[tileOffset + threadIdx.x];
+    knot_num = lut_knot[tileOffset + threadIdx.x];
 
     cond_x[ (64*knot_num) + tile_pos.x ] = sBuffer_x[threadIdx.x];
     cond_y[ (64*knot_num) + tile_pos.x ] = sBuffer_y[threadIdx.x];
