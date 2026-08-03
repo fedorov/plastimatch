@@ -15,11 +15,16 @@ name: CI Linux
 #   as a downloadable package. Static builds cost ~25 min once and are then restored from
 #   the actions cache, and give the same ITK/DCMTK version on Linux, macOS and Windows.
 #
-#   Everything else plastimatch can use -- dlib, liblbfgs, inih, devillard, specfun,
-#   nkidecompress, rapidjson, sqlite3 -- is bundled under libs/ and built from the tree
-#   (PLM_PREFER_SYSTEM_DLIB=OFF). The optional accelerators (FFTW, nlopt, libyaml, Octave,
-#   wxWidgets, Qt, CUDA, OpenCL) are left out so all three platforms produce a
-#   feature-identical package; add them per-platform later if wanted.
+#   dlib is built the same way, for a different reason: see the DLIB_VERSION comment below.
+#
+#   Each dependency gets its own install prefix, cache entry and save step, so a failure in
+#   one does not discard the others: if DCMTK breaks, the ITK cache is still banked and the
+#   next run only retries DCMTK.
+#
+#   The remaining bundled libraries -- liblbfgs, inih, devillard, specfun, nkidecompress,
+#   rapidjson, sqlite3 -- are built from libs/ as usual. The optional accelerators (FFTW,
+#   nlopt, libyaml, Octave, wxWidgets, Qt, CUDA, OpenCL) are left out so all three platforms
+#   produce a feature-identical package; add them per-platform later if wanted.
 #
 # Note on portability: the package is built on Ubuntu 24.04, so it needs glibc >= 2.39.
 # Building inside a manylinux/dockcross image (as dcmqi does) would lower that floor.
@@ -40,8 +45,14 @@ concurrency:
 env:
   ITK_VERSION: 5.4.0
   DCMTK_VERSION: 3.6.8
-  # Bump to force a rebuild of the cached dependencies.
-  DEPS_CACHE_EPOCH: v1
+  # The bundled libs/dlib-19.1 cannot be used: it still relies on std::binary_function,
+  # removed in C++17, and ITK 5.4 forces C++17 on consumers via
+  # INTERFACE_COMPILE_FEATURES. plastimatch supports linking a real dlib -- the dlib .cpp
+  # includes in src/sys/dlib_threads.cxx are guarded by !DLIB_HAVE_LIBRARY -- so build a
+  # current one instead.
+  DLIB_VERSION: 19.24.9
+  # Bump to force a rebuild of every cached dependency.
+  DEPS_CACHE_EPOCH: v2
 
 jobs:
   build-linux:
@@ -66,62 +77,110 @@ jobs:
           cmake --version
           ninja --version
 
-      - name: Restore ITK/DCMTK cache
-        id: cache-deps
+      ##------------------------------------------------------------------------------
+      ##  ITK
+      ##------------------------------------------------------------------------------
+      - name: Restore ITK cache
+        id: cache-itk
         uses: actions/cache/restore@v5
         with:
-          path: ${{ runner.temp }}/deps/install
-          key: linux-x86_64-deps-${{ env.DEPS_CACHE_EPOCH }}-itk${{ env.ITK_VERSION }}-dcmtk${{ env.DCMTK_VERSION }}
+          path: ${{ runner.temp }}/deps/itk
+          key: linux-x86_64-itk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.ITK_VERSION }}
 
-      # A cache saved from a half-finished dependency build has the CMake config files but
-      # not the libraries, which only shows up much later as a link error. Require a real
-      # library from each project before trusting the cache.
-      - name: Validate restored cache
-        id: validate-cache
+      # A cache saved from a half-finished build would have the CMake config files but not
+      # the libraries, which only surfaces much later as a link error. Require a real library.
+      - name: Check ITK cache
+        id: check-itk
         run: |
           ok=false
-          if [ "${{ steps.cache-deps.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ steps.cache-itk.outputs.cache-hit }}" == "true" ] \
+             && ls "${{ runner.temp }}"/deps/itk/lib/libITKCommon-*.a >/dev/null 2>&1; then
             ok=true
-            ls "${{ runner.temp }}"/deps/install/lib/libITKCommon-*.a >/dev/null 2>&1 || { echo "cached ITK is incomplete"; ok=false; }
-            ls "${{ runner.temp }}"/deps/install/lib/libdcmdata.a    >/dev/null 2>&1 || { echo "cached DCMTK is incomplete"; ok=false; }
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
-          echo "Usable dependency cache: $ok"
+          echo "Usable ITK cache: $ok"
 
-      - name: Build ITK and DCMTK
-        if: steps.validate-cache.outputs.ok != 'true'
+      - name: Build ITK
+        id: build-itk
+        if: steps.check-itk.outputs.ok != 'true'
         run: |
           set -euo pipefail
           deps="${{ runner.temp }}/deps"
-          prefix="$deps/install"
           mkdir -p "$deps/src" && cd "$deps/src"
-
           curl -fsSL -o itk.tar.gz \
             "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v${ITK_VERSION}/InsightToolkit-${ITK_VERSION}.tar.gz"
           tar xzf itk.tar.gz
-          curl -fsSL -o dcmtk.tar.gz \
-            "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-${DCMTK_VERSION}.tar.gz"
-          tar xzf dcmtk.tar.gz
-
-          cmake -S "$deps/src/InsightToolkit-${ITK_VERSION}" -B "$deps/itk-build" -G Ninja \
+          cmake -S "$deps/src/InsightToolkit-${ITK_VERSION}" -B "$deps/build-itk" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_INSTALL_PREFIX="$deps/itk" \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DBUILD_EXAMPLES=OFF \
             -DITK_USE_SYSTEM_ZLIB=OFF \
             -DModule_ITKReview=ON
-          cmake --build "$deps/itk-build" --target install
+          cmake --build "$deps/build-itk" --target install
 
-          # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
-          # libraries. The optional backends are off to keep the static link
-          # self-contained (costs deflated transfer syntax, TLS, and DICOM character-set
-          # conversion) and to keep the three platforms configured identically.
-          cmake -S "$deps/src/dcmtk-DCMTK-${DCMTK_VERSION}" -B "$deps/dcmtk-build" -G Ninja \
+      # Saved as soon as ITK itself is installed, so a later DCMTK/dlib/plastimatch failure
+      # does not throw this build away. `cmake --build --target install` returning 0 means
+      # the install tree is complete, which is a precise signal -- no need to proxy it
+      # through the success of a later step. !cancelled() keeps the step eligible when a
+      # later step has already failed; steps.build-itk.outcome does the real gating, so a
+      # cancelled or failed ITK build is never snapshotted.
+      - name: Save ITK cache
+        if: ${{ !cancelled() && steps.build-itk.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/itk
+          key: ${{ steps.cache-itk.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  DCMTK
+      ##------------------------------------------------------------------------------
+      - name: Restore DCMTK cache
+        id: cache-dcmtk
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/dcmtk
+          key: linux-x86_64-dcmtk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DCMTK_VERSION }}
+
+      - name: Check DCMTK cache
+        id: check-dcmtk
+        run: |
+          ok=false
+          if [ "${{ steps.cache-dcmtk.outputs.cache-hit }}" == "true" ] \
+             && [ -f "${{ runner.temp }}/deps/dcmtk/lib/libdcmdata.a" ]; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable DCMTK cache: $ok"
+
+      # CMAKE_CXX_STANDARD=17 matters: left at its default, DCMTK 3.6.8 reports "C++11
+      # features disabled" and falls back to the pre-C++11 OFrvalue emulation in
+      # ofstd/include/dcmtk/ofstd/ofutil.h, which newer compilers reject outright (AppleClang
+      # 17: "no member named 'pt' in OFrvalue_storage<T, >"). plastimatch compiles those same
+      # headers under C++17, so the emulation has to be off here too.
+      #
+      # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
+      # libraries. The optional backends are off to keep the static link self-contained
+      # (costs deflated transfer syntax, TLS, and DICOM character-set conversion) and to keep
+      # the three platforms configured identically.
+      - name: Build DCMTK
+        id: build-dcmtk
+        if: steps.check-dcmtk.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          mkdir -p "$deps/src" && cd "$deps/src"
+          curl -fsSL -o dcmtk.tar.gz \
+            "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-${DCMTK_VERSION}.tar.gz"
+          tar xzf dcmtk.tar.gz
+          cmake -S "$deps/src/dcmtk-DCMTK-${DCMTK_VERSION}" -B "$deps/build-dcmtk" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_INSTALL_PREFIX="$deps/dcmtk" \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DDCMTK_ENABLE_CXX11=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_APPS=OFF \
             -DDCMTK_WITH_ZLIB=OFF \
@@ -133,43 +192,112 @@ jobs:
             -DDCMTK_WITH_ICU=OFF \
             -DDCMTK_WITH_SNDFILE=OFF \
             -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
-          cmake --build "$deps/dcmtk-build" --target install
+          cmake --build "$deps/build-dcmtk" --target install
 
+      - name: Save DCMTK cache
+        if: ${{ !cancelled() && steps.build-dcmtk.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/dcmtk
+          key: ${{ steps.cache-dcmtk.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  dlib
+      ##------------------------------------------------------------------------------
+      - name: Restore dlib cache
+        id: cache-dlib
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/dlib
+          key: linux-x86_64-dlib-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DLIB_VERSION }}
+
+      - name: Check dlib cache
+        id: check-dlib
+        run: |
+          ok=false
+          if [ "${{ steps.cache-dlib.outputs.cache-hit }}" == "true" ] \
+             && [ -f "${{ runner.temp }}/deps/dlib/lib/libdlib.a" ]; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable dlib cache: $ok"
+
+      # Minimal dlib: plastimatch only uses the optimization, threading, svm and command
+      # line parser headers, so the image/GUI/BLAS backends are all off to keep the static
+      # link self-contained.
+      - name: Build dlib
+        id: build-dlib
+        if: steps.check-dlib.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          mkdir -p "$deps/src" && cd "$deps/src"
+          curl -fsSL -o dlib.tar.gz \
+            "https://github.com/davisking/dlib/archive/refs/tags/v${DLIB_VERSION}.tar.gz"
+          tar xzf dlib.tar.gz
+          cmake -S "$deps/src/dlib-${DLIB_VERSION}" -B "$deps/build-dlib" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$deps/dlib" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DDLIB_NO_GUI_SUPPORT=ON \
+            -DDLIB_JPEG_SUPPORT=OFF \
+            -DDLIB_PNG_SUPPORT=OFF \
+            -DDLIB_GIF_SUPPORT=OFF \
+            -DDLIB_WEBP_SUPPORT=OFF \
+            -DDLIB_USE_BLAS=OFF \
+            -DDLIB_USE_LAPACK=OFF \
+            -DDLIB_USE_CUDA=OFF \
+            -DDLIB_USE_MKL_FFT=OFF \
+            -DDLIB_LINK_WITH_SQLITE3=OFF
+          cmake --build "$deps/build-dlib" --target install
+
+      - name: Save dlib cache
+        if: ${{ !cancelled() && steps.build-dlib.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/dlib
+          key: ${{ steps.cache-dlib.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  plastimatch
+      ##------------------------------------------------------------------------------
+      # dlib_INCLUDE_DIR is passed explicitly because src/CMakeLists.txt copies it into
+      # DLIB_INCLUDE_DIR, which src/clp consumes as a plain include path rather than through
+      # the dlib::dlib target.
       - name: Configure plastimatch
         run: |
           set -euo pipefail
-          prefix="${{ runner.temp }}/deps/install"
-          itk_dir=$(dirname "$(ls "$prefix"/lib/cmake/ITK-*/ITKConfig.cmake)")
+          deps="${{ runner.temp }}/deps"
+          # Locate the config files rather than hardcoding paths: the exact subdirectory
+          # depends on the ITK version and on each project's CMAKE_INSTALL_LIBDIR.
+          itk_dir=$(dirname "$(find "$deps/itk" -name ITKConfig.cmake -print -quit)")
+          dcmtk_dir=$(dirname "$(find "$deps/dcmtk" -name DCMTKConfig.cmake -print -quit)")
+          dlib_dir=$(dirname "$(find "$deps/dlib" -name dlibConfig.cmake -print -quit)")
           echo "ITK_DIR=$itk_dir"
+          echo "DCMTK_DIR=$dcmtk_dir"
+          echo "dlib_DIR=$dlib_dir"
           cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
             -DBUILD_SHARED_LIBS=OFF \
             -DITK_DIR="$itk_dir" \
-            -DDCMTK_DIR="$prefix/lib/cmake/dcmtk" \
+            -DDCMTK_DIR="$dcmtk_dir" \
+            -Ddlib_DIR="$dlib_dir" \
+            -Ddlib_INCLUDE_DIR="$deps/dlib/include" \
             -DPLM_SYSTEM_ITK=YES \
             -DPLM_SYSTEM_DCMTK=YES \
+            -DPLM_PREFER_SYSTEM_DLIB=ON \
             -DPLM_CONFIG_ENABLE_CUDA=OFF \
             -DPLM_CONFIG_ENABLE_OPENCL=OFF \
             -DPLM_CONFIG_ENABLE_QT=OFF \
             -DPLM_CONFIG_ENABLE_OPENMP=ON \
             -DPLM_CONFIG_ENABLE_SSE2=ON \
-            -DPLM_PREFER_SYSTEM_DLIB=OFF \
             -DPLM_BUILD_TESTING=ON
 
       - name: Build plastimatch
-        id: build
         run: cmake --build "${{ github.workspace }}/build"
-
-      # See the comment on the equivalent step in cmake-macos.yml: keep the dependency
-      # cache when a later step (test, package) fails, but never snapshot a tree from a
-      # failed or cancelled dependency build -- a partial entry is a cache hit, which would
-      # skip this save and poison every later run.
-      - name: Save ITK/DCMTK cache
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.validate-cache.outputs.ok != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ runner.temp }}/deps/install
-          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
 
       # Informational for now: the regression suite has never run in GitHub Actions, so it
       # is not yet gating. Drop continue-on-error once it is known green here.

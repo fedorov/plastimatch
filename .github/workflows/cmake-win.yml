@@ -3,10 +3,11 @@ name: CI Windows
 # Builds plastimatch on Windows (x64, MSVC 2022) and uploads a self-contained binary
 # package.
 #
-# See the header comment in cmake-linux.yml for why ITK and DCMTK are built from source as
-# static libraries. On Windows there is no packaged alternative anyway, so the first run
-# without a dependency cache is long (roughly an hour for ITK) -- hence the generous
-# timeout. Later runs restore the cache and only compile plastimatch itself.
+# See the header comment in cmake-linux.yml for the dependency strategy: ITK, DCMTK and dlib
+# are built from source as static libraries, each with its own cache entry. On Windows there
+# is no packaged alternative anyway, so the first run without caches is long (roughly an hour
+# for ITK) -- hence the generous timeout. Later runs restore the caches and only compile
+# plastimatch itself.
 
 on:
   push:
@@ -24,8 +25,14 @@ concurrency:
 env:
   ITK_VERSION: 5.4.0
   DCMTK_VERSION: 3.6.8
-  # Bump to force a rebuild of the cached dependencies.
-  DEPS_CACHE_EPOCH: v1
+  # The bundled libs/dlib-19.1 cannot be used: it still relies on std::binary_function,
+  # removed in C++17, and ITK 5.4 forces C++17 on consumers via
+  # INTERFACE_COMPILE_FEATURES. plastimatch supports linking a real dlib -- the dlib .cpp
+  # includes in src/sys/dlib_threads.cxx are guarded by !DLIB_HAVE_LIBRARY -- so build a
+  # current one instead.
+  DLIB_VERSION: 19.24.9
+  # Bump to force a rebuild of every cached dependency.
+  DEPS_CACHE_EPOCH: v2
 
 jobs:
   build-windows:
@@ -48,63 +55,116 @@ jobs:
           vs-version: '17'
           msbuild-architecture: x64
 
-      - name: Restore ITK/DCMTK cache
-        id: cache-deps
+      ##------------------------------------------------------------------------------
+      ##  ITK
+      ##------------------------------------------------------------------------------
+      - name: Restore ITK cache
+        id: cache-itk
         uses: actions/cache/restore@v5
         with:
-          path: ${{ runner.temp }}\deps\install
-          key: windows-x64-deps-${{ env.DEPS_CACHE_EPOCH }}-itk${{ env.ITK_VERSION }}-dcmtk${{ env.DCMTK_VERSION }}
+          path: ${{ runner.temp }}\deps\itk
+          key: windows-x64-itk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.ITK_VERSION }}
 
-      # A cache saved from a half-finished dependency build has the CMake config files but
-      # not the libraries, which only shows up much later as a link error. Require a real
-      # library from each project before trusting the cache.
-      - name: Validate restored cache
-        id: validate-cache
+      # A cache saved from a half-finished build would have the CMake config files but not
+      # the libraries, which only surfaces much later as a link error. Require a real library.
+      - name: Check ITK cache
+        id: check-itk
         shell: bash
         run: |
           ok=false
-          if [ "${{ steps.cache-deps.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ steps.cache-itk.outputs.cache-hit }}" == "true" ] \
+             && ls "$RUNNER_TEMP"/deps/itk/lib/ITKCommon-*.lib >/dev/null 2>&1; then
             ok=true
-            ls "$RUNNER_TEMP"/deps/install/lib/ITKCommon-*.lib >/dev/null 2>&1 || { echo "cached ITK is incomplete"; ok=false; }
-            ls "$RUNNER_TEMP"/deps/install/lib/dcmdata.lib     >/dev/null 2>&1 || { echo "cached DCMTK is incomplete"; ok=false; }
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
-          echo "Usable dependency cache: $ok"
+          echo "Usable ITK cache: $ok"
 
-      - name: Build ITK and DCMTK
-        if: steps.validate-cache.outputs.ok != 'true'
+      - name: Build ITK
+        id: build-itk
+        if: steps.check-itk.outputs.ok != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $deps = "$env:RUNNER_TEMP\deps"
-          $prefix = "$deps\install"
           New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
           Set-Location "$deps\src"
-
           Invoke-WebRequest -Uri "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v$env:ITK_VERSION/InsightToolkit-$env:ITK_VERSION.tar.gz" -OutFile itk.tar.gz
           tar xzf itk.tar.gz
-          Invoke-WebRequest -Uri "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-$env:DCMTK_VERSION.tar.gz" -OutFile dcmtk.tar.gz
-          tar xzf dcmtk.tar.gz
-
-          cmake -S "$deps\src\InsightToolkit-$env:ITK_VERSION" -B "$deps\itk-build" -G "Visual Studio 17 2022" -A x64 `
-            "-DCMAKE_INSTALL_PREFIX=$prefix" `
+          cmake -S "$deps\src\InsightToolkit-$env:ITK_VERSION" -B "$deps\build-itk" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$deps\itk" `
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_TESTING=OFF `
             -DBUILD_EXAMPLES=OFF `
             -DITK_USE_SYSTEM_ZLIB=OFF `
             -DModule_ITKReview=ON
           if ($LASTEXITCODE -ne 0) { throw "ITK configure failed" }
-          cmake --build "$deps\itk-build" --config Release --target INSTALL -- /m
+          cmake --build "$deps\build-itk" --config Release --target INSTALL -- /m
           if ($LASTEXITCODE -ne 0) { throw "ITK build failed" }
 
-          # DCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF keeps DCMTK from forcing /MT, so it
-          # uses the same /MD runtime as ITK and plastimatch -- this mirrors what
-          # SuperBuild/External_DCMTK.cmake does. BUILD_APPS=OFF skips the ~30 command line
-          # tools; plastimatch only links the libraries. The optional backends are off to
-          # keep the static link self-contained (costs deflated transfer syntax, TLS, and
-          # DICOM character-set conversion).
-          cmake -S "$deps\src\dcmtk-DCMTK-$env:DCMTK_VERSION" -B "$deps\dcmtk-build" -G "Visual Studio 17 2022" -A x64 `
-            "-DCMAKE_INSTALL_PREFIX=$prefix" `
+      # Saved as soon as ITK itself is installed, so a later DCMTK/dlib/plastimatch failure
+      # does not throw this build away. `cmake --build --target INSTALL` returning 0 means
+      # the install tree is complete, which is a precise signal -- no need to proxy it
+      # through the success of a later step. !cancelled() keeps the step eligible when a
+      # later step has already failed; steps.build-itk.outcome does the real gating, so a
+      # cancelled or failed ITK build is never snapshotted.
+      - name: Save ITK cache
+        if: ${{ !cancelled() && steps.build-itk.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}\deps\itk
+          key: ${{ steps.cache-itk.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  DCMTK
+      ##------------------------------------------------------------------------------
+      - name: Restore DCMTK cache
+        id: cache-dcmtk
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}\deps\dcmtk
+          key: windows-x64-dcmtk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DCMTK_VERSION }}
+
+      - name: Check DCMTK cache
+        id: check-dcmtk
+        shell: bash
+        run: |
+          ok=false
+          if [ "${{ steps.cache-dcmtk.outputs.cache-hit }}" == "true" ] \
+             && [ -f "$RUNNER_TEMP/deps/dcmtk/lib/dcmdata.lib" ]; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable DCMTK cache: $ok"
+
+      # DCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF keeps DCMTK from forcing /MT, so it uses the
+      # same /MD runtime as ITK and plastimatch -- this mirrors what
+      # SuperBuild/External_DCMTK.cmake does.
+      #
+      # CMAKE_CXX_STANDARD=17 matters: left at its default, DCMTK 3.6.8 reports "C++11
+      # features disabled" and falls back to the pre-C++11 OFrvalue emulation in
+      # ofstd/include/dcmtk/ofstd/ofutil.h, which newer compilers reject outright (AppleClang
+      # 17: "no member named 'pt' in OFrvalue_storage<T, >"). plastimatch compiles those same
+      # headers under C++17, so the emulation has to be off here too.
+      #
+      # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
+      # libraries. The optional backends are off to keep the static link self-contained
+      # (costs deflated transfer syntax, TLS, and DICOM character-set conversion) and to keep
+      # the three platforms configured identically.
+      - name: Build DCMTK
+        id: build-dcmtk
+        if: steps.check-dcmtk.outputs.ok != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deps = "$env:RUNNER_TEMP\deps"
+          New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
+          Set-Location "$deps\src"
+          Invoke-WebRequest -Uri "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-$env:DCMTK_VERSION.tar.gz" -OutFile dcmtk.tar.gz
+          tar xzf dcmtk.tar.gz
+          cmake -S "$deps\src\dcmtk-DCMTK-$env:DCMTK_VERSION" -B "$deps\build-dcmtk" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$deps\dcmtk" `
+            -DCMAKE_CXX_STANDARD=17 `
+            -DDCMTK_ENABLE_CXX11=ON `
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_APPS=OFF `
             -DDCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF `
@@ -118,55 +178,126 @@ jobs:
             -DDCMTK_WITH_SNDFILE=OFF `
             -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
           if ($LASTEXITCODE -ne 0) { throw "DCMTK configure failed" }
-          cmake --build "$deps\dcmtk-build" --config Release --target INSTALL -- /m
+          cmake --build "$deps\build-dcmtk" --config Release --target INSTALL -- /m
           if ($LASTEXITCODE -ne 0) { throw "DCMTK build failed" }
 
+      - name: Save DCMTK cache
+        if: ${{ !cancelled() && steps.build-dcmtk.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}\deps\dcmtk
+          key: ${{ steps.cache-dcmtk.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  dlib
+      ##------------------------------------------------------------------------------
+      - name: Restore dlib cache
+        id: cache-dlib
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}\deps\dlib
+          key: windows-x64-dlib-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DLIB_VERSION }}
+
+      # dlib appends a version/config/compiler suffix to its static library name on MSVC
+      # (e.g. dlib19.24.9_release_64bit_msvc1943.lib), so match by prefix.
+      - name: Check dlib cache
+        id: check-dlib
+        shell: bash
+        run: |
+          ok=false
+          if [ "${{ steps.cache-dlib.outputs.cache-hit }}" == "true" ] \
+             && ls "$RUNNER_TEMP"/deps/dlib/lib/dlib*.lib >/dev/null 2>&1; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable dlib cache: $ok"
+
+      # Minimal dlib: plastimatch only uses the optimization, threading, svm and command
+      # line parser headers, so the image/GUI/BLAS backends are all off to keep the static
+      # link self-contained.
+      - name: Build dlib
+        id: build-dlib
+        if: steps.check-dlib.outputs.ok != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deps = "$env:RUNNER_TEMP\deps"
+          New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
+          Set-Location "$deps\src"
+          Invoke-WebRequest -Uri "https://github.com/davisking/dlib/archive/refs/tags/v$env:DLIB_VERSION.tar.gz" -OutFile dlib.tar.gz
+          tar xzf dlib.tar.gz
+          cmake -S "$deps\src\dlib-$env:DLIB_VERSION" -B "$deps\build-dlib" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$deps\dlib" `
+            -DCMAKE_CXX_STANDARD=17 `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DDLIB_NO_GUI_SUPPORT=ON `
+            -DDLIB_JPEG_SUPPORT=OFF `
+            -DDLIB_PNG_SUPPORT=OFF `
+            -DDLIB_GIF_SUPPORT=OFF `
+            -DDLIB_WEBP_SUPPORT=OFF `
+            -DDLIB_USE_BLAS=OFF `
+            -DDLIB_USE_LAPACK=OFF `
+            -DDLIB_USE_CUDA=OFF `
+            -DDLIB_USE_MKL_FFT=OFF `
+            -DDLIB_LINK_WITH_SQLITE3=OFF
+          if ($LASTEXITCODE -ne 0) { throw "dlib configure failed" }
+          cmake --build "$deps\build-dlib" --config Release --target INSTALL -- /m
+          if ($LASTEXITCODE -ne 0) { throw "dlib build failed" }
+
+      - name: Save dlib cache
+        if: ${{ !cancelled() && steps.build-dlib.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}\deps\dlib
+          key: ${{ steps.cache-dlib.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
+      ##  plastimatch
+      ##------------------------------------------------------------------------------
       # PLM_PACKAGE_WIX=OFF selects the ZIP CPack generator instead of the default WIX
       # installer, so all three platforms produce a plain archive. Building the MSI would
       # additionally depend on the WiX toolset being present on the runner.
+      #
+      # dlib_INCLUDE_DIR is passed explicitly because src/CMakeLists.txt copies it into
+      # DLIB_INCLUDE_DIR, which src/clp consumes as a plain include path rather than through
+      # the dlib::dlib target.
       - name: Configure plastimatch
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $prefix = "$env:RUNNER_TEMP\deps\install"
-          $itkDir = (Get-Item "$prefix\lib\cmake\ITK-*\ITKConfig.cmake").Directory.FullName
-          # DCMTK installs its config under <prefix>\cmake on Windows and
-          # <prefix>/lib/cmake/dcmtk elsewhere, so locate it rather than hardcoding.
-          $dcmtkDir = (Get-ChildItem -Path $prefix -Recurse -Filter DCMTKConfig.cmake | Select-Object -First 1).Directory.FullName
+          $deps = "$env:RUNNER_TEMP\deps"
+          $itkDir = (Get-Item "$deps\itk\lib\cmake\ITK-*\ITKConfig.cmake").Directory.FullName
+          # DCMTK and dlib install their config files under different subdirectories on
+          # Windows than on Unix, so locate them rather than hardcoding paths.
+          $dcmtkDir = (Get-ChildItem -Path "$deps\dcmtk" -Recurse -Filter DCMTKConfig.cmake | Select-Object -First 1).Directory.FullName
+          $dlibDir = (Get-ChildItem -Path "$deps\dlib" -Recurse -Filter dlibConfig.cmake | Select-Object -First 1).Directory.FullName
           Write-Host "ITK_DIR=$itkDir"
           Write-Host "DCMTK_DIR=$dcmtkDir"
+          Write-Host "dlib_DIR=$dlibDir"
           cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}\build" -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_CXX_STANDARD=17 `
             -DBUILD_SHARED_LIBS=OFF `
             "-DITK_DIR=$itkDir" `
             "-DDCMTK_DIR=$dcmtkDir" `
+            "-Ddlib_DIR=$dlibDir" `
+            "-Ddlib_INCLUDE_DIR=$deps\dlib\include" `
             -DPLM_SYSTEM_ITK=YES `
             -DPLM_SYSTEM_DCMTK=YES `
+            -DPLM_PREFER_SYSTEM_DLIB=ON `
             -DPLM_CONFIG_ENABLE_CUDA=OFF `
             -DPLM_CONFIG_ENABLE_OPENCL=OFF `
             -DPLM_CONFIG_ENABLE_QT=OFF `
             -DPLM_CONFIG_ENABLE_OPENMP=ON `
-            -DPLM_PREFER_SYSTEM_DLIB=OFF `
             -DPLM_PACKAGE_WIX=OFF `
             -DPLM_BUILD_TESTING=ON
           if ($LASTEXITCODE -ne 0) { throw "plastimatch configure failed" }
 
       - name: Build plastimatch
-        id: build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           cmake --build "${{ github.workspace }}\build" --config Release -- /m
           if ($LASTEXITCODE -ne 0) { throw "plastimatch build failed" }
-
-      # Keep the dependency cache when a later step (test, package) fails, but never
-      # snapshot a tree from a failed or cancelled dependency build: a partial entry is
-      # still a cache hit, which would skip this save and poison every later run.
-      - name: Save ITK/DCMTK cache
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.validate-cache.outputs.ok != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ runner.temp }}\deps\install
-          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
 
       # Informational for now: the regression suite has never run in GitHub Actions, so it
       # is not yet gating. Drop continue-on-error once it is known green here.
