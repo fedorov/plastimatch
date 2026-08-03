@@ -1,0 +1,226 @@
+name: CI macOS
+
+# Builds plastimatch for both macOS architectures -- Intel (x86_64) on macos-15-intel and
+# Apple Silicon (arm64) on macos-15 -- and uploads a self-contained binary package for each.
+#
+# See the header comment in cmake-linux.yml for why ITK and DCMTK are built from source as
+# static libraries instead of taken from Homebrew.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ITK_VERSION: 5.4.0
+  DCMTK_VERSION: 3.6.8
+  # Bump to force a rebuild of the cached dependencies.
+  DEPS_CACHE_EPOCH: v1
+
+jobs:
+  build-macos:
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+            # cmake/FindSSE.cmake detects SSE2 by regexing `sysctl -n
+            # machdep.cpu.features`, which works on Intel...
+            enable_sse2: 'ON'
+          - arch: arm64
+            runner: macos-15
+            # ...but that sysctl does not exist on Apple Silicon, and FindSSE.cmake feeds
+            # the empty output straight into string(REGEX REPLACE ...), which is a CMake
+            # hard error. The SSE2 code paths are x86-only anyway.
+            enable_sse2: 'OFF'
+
+    steps:
+      # fetch-depth: 0 is required: CMakeLists.txt runs `git describe --always` to compute
+      # PLASTIMATCH_VERSION_STRING and PLM_VERSION_TWEAK.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          brew install ninja
+          cmake --version
+          ninja --version
+
+      - name: Restore ITK/DCMTK cache
+        id: cache-deps
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/install
+          key: macos-${{ matrix.arch }}-deps-${{ env.DEPS_CACHE_EPOCH }}-itk${{ env.ITK_VERSION }}-dcmtk${{ env.DCMTK_VERSION }}
+
+      # A cache saved from a half-finished dependency build has the CMake config files but
+      # not the libraries, which only shows up much later as a link error. Require a real
+      # library from each project before trusting the cache.
+      - name: Validate restored cache
+        id: validate-cache
+        run: |
+          ok=false
+          if [ "${{ steps.cache-deps.outputs.cache-hit }}" == "true" ]; then
+            ok=true
+            ls "${{ runner.temp }}"/deps/install/lib/libITKCommon-*.a >/dev/null 2>&1 || { echo "cached ITK is incomplete"; ok=false; }
+            ls "${{ runner.temp }}"/deps/install/lib/libdcmdata.a    >/dev/null 2>&1 || { echo "cached DCMTK is incomplete"; ok=false; }
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable dependency cache: $ok"
+
+      - name: Build ITK and DCMTK
+        if: steps.validate-cache.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          prefix="$deps/install"
+          mkdir -p "$deps/src" && cd "$deps/src"
+
+          curl -fsSL -o itk.tar.gz \
+            "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v${ITK_VERSION}/InsightToolkit-${ITK_VERSION}.tar.gz"
+          tar xzf itk.tar.gz
+          curl -fsSL -o dcmtk.tar.gz \
+            "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-${DCMTK_VERSION}.tar.gz"
+          tar xzf dcmtk.tar.gz
+
+          cmake -S "$deps/src/InsightToolkit-${ITK_VERSION}" -B "$deps/itk-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DITK_USE_SYSTEM_ZLIB=OFF \
+            -DModule_ITKReview=ON
+          cmake --build "$deps/itk-build" --target install
+
+          # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
+          # libraries. The optional backends are off to keep the static link
+          # self-contained (costs deflated transfer syntax, TLS, and DICOM character-set
+          # conversion) and to keep the three platforms configured identically.
+          cmake -S "$deps/src/dcmtk-DCMTK-${DCMTK_VERSION}" -B "$deps/dcmtk-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_APPS=OFF \
+            -DDCMTK_WITH_ZLIB=OFF \
+            -DDCMTK_WITH_OPENSSL=OFF \
+            -DDCMTK_WITH_PNG=OFF \
+            -DDCMTK_WITH_TIFF=OFF \
+            -DDCMTK_WITH_XML=OFF \
+            -DDCMTK_WITH_ICONV=OFF \
+            -DDCMTK_WITH_ICU=OFF \
+            -DDCMTK_WITH_SNDFILE=OFF \
+            -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
+          cmake --build "$deps/dcmtk-build" --target install
+
+      # OpenMP is off because cmake/FindOpenMP.cmake has no candidate that works with
+      # AppleClang: its clang entry pairs -fopenmp=libomp with -lgomp, which Homebrew's
+      # libomp does not provide. Turning it off skips a probe that can only fail.
+      - name: Configure plastimatch
+        run: |
+          set -euo pipefail
+          prefix="${{ runner.temp }}/deps/install"
+          itk_dir=$(dirname "$(ls "$prefix"/lib/cmake/ITK-*/ITKConfig.cmake)")
+          echo "ITK_DIR=$itk_dir"
+          cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DITK_DIR="$itk_dir" \
+            -DDCMTK_DIR="$prefix/lib/cmake/dcmtk" \
+            -DPLM_SYSTEM_ITK=YES \
+            -DPLM_SYSTEM_DCMTK=YES \
+            -DPLM_CONFIG_ENABLE_CUDA=OFF \
+            -DPLM_CONFIG_ENABLE_OPENCL=OFF \
+            -DPLM_CONFIG_ENABLE_QT=OFF \
+            -DPLM_CONFIG_ENABLE_OPENMP=OFF \
+            -DPLM_CONFIG_ENABLE_SSE2=${{ matrix.enable_sse2 }} \
+            -DPLM_PREFER_SYSTEM_DLIB=OFF \
+            -DPLM_BUILD_TESTING=ON
+
+      - name: Build plastimatch
+        id: build
+        run: cmake --build "${{ github.workspace }}/build"
+
+      # Keep the dependency cache when a later step (test, package) fails, but never
+      # snapshot a tree from a failed or cancelled dependency build: a partial entry is
+      # still a cache hit, which would skip this save and poison every later run.
+      # !cancelled() keeps this eligible after a failed test/package; steps.build.outcome
+      # does the real gating.
+      - name: Save ITK/DCMTK cache
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.validate-cache.outputs.ok != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/install
+          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
+
+      # Informational for now: the regression suite has never run in GitHub Actions, so it
+      # is not yet gating. Drop continue-on-error once it is known green here.
+      - name: Test
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}/build
+        run: ctest --output-on-failure
+
+      - name: Package
+        working-directory: ${{ github.workspace }}/build
+        run: cpack -G ZIP
+
+      # CPack alone produces plastimatch-1.10.0-Darwin.zip for both architectures, so the
+      # two macOS packages would overwrite each other as release assets. Rename to carry
+      # platform, arch, build date and commit.
+      - name: Name the package
+        id: pkg
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+          src=$(ls plastimatch-*.zip)
+          ver=$(echo "$src" | sed -E 's/^plastimatch-([0-9][0-9.]*)-.*/\1/')
+          dst="plastimatch-${ver}-mac-${{ matrix.arch }}-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD).zip"
+          mv "$src" "$dst"
+          unzip -l "$dst"
+          echo "name=$dst" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package as artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: plastimatch-macos-${{ matrix.arch }}-package
+          path: ${{ github.workspace }}/build/${{ steps.pkg.outputs.name }}
+
+      - name: Upload package as artifact (retry)
+        if: steps.upload-artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: plastimatch-macos-${{ matrix.arch }}-package
+          path: ${{ github.workspace }}/build/${{ steps.pkg.outputs.name }}
+
+      # Tagged (stable) releases only. The rolling "latest" prerelease is (re)created by
+      # finalize-latest.yml once every platform has finished building.
+      - name: Publish package to the release
+        if: ${{ github.event_name == 'release' && github.event.release.tag_name != 'latest' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}/build
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.pkg.outputs.name }}" --clobber

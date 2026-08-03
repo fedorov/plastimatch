@@ -1,0 +1,226 @@
+name: CI Windows
+
+# Builds plastimatch on Windows (x64, MSVC 2022) and uploads a self-contained binary
+# package.
+#
+# See the header comment in cmake-linux.yml for why ITK and DCMTK are built from source as
+# static libraries. On Windows there is no packaged alternative anyway, so the first run
+# without a dependency cache is long (roughly an hour for ITK) -- hence the generous
+# timeout. Later runs restore the cache and only compile plastimatch itself.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ITK_VERSION: 5.4.0
+  DCMTK_VERSION: 3.6.8
+  # Bump to force a rebuild of the cached dependencies.
+  DEPS_CACHE_EPOCH: v1
+
+jobs:
+  build-windows:
+
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    permissions:
+      contents: write
+
+    steps:
+      # fetch-depth: 0 is required: CMakeLists.txt runs `git describe --always` to compute
+      # PLASTIMATCH_VERSION_STRING and PLM_VERSION_TWEAK.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '17'
+          msbuild-architecture: x64
+
+      - name: Restore ITK/DCMTK cache
+        id: cache-deps
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}\deps\install
+          key: windows-x64-deps-${{ env.DEPS_CACHE_EPOCH }}-itk${{ env.ITK_VERSION }}-dcmtk${{ env.DCMTK_VERSION }}
+
+      # A cache saved from a half-finished dependency build has the CMake config files but
+      # not the libraries, which only shows up much later as a link error. Require a real
+      # library from each project before trusting the cache.
+      - name: Validate restored cache
+        id: validate-cache
+        shell: bash
+        run: |
+          ok=false
+          if [ "${{ steps.cache-deps.outputs.cache-hit }}" == "true" ]; then
+            ok=true
+            ls "$RUNNER_TEMP"/deps/install/lib/ITKCommon-*.lib >/dev/null 2>&1 || { echo "cached ITK is incomplete"; ok=false; }
+            ls "$RUNNER_TEMP"/deps/install/lib/dcmdata.lib     >/dev/null 2>&1 || { echo "cached DCMTK is incomplete"; ok=false; }
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable dependency cache: $ok"
+
+      - name: Build ITK and DCMTK
+        if: steps.validate-cache.outputs.ok != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deps = "$env:RUNNER_TEMP\deps"
+          $prefix = "$deps\install"
+          New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
+          Set-Location "$deps\src"
+
+          Invoke-WebRequest -Uri "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v$env:ITK_VERSION/InsightToolkit-$env:ITK_VERSION.tar.gz" -OutFile itk.tar.gz
+          tar xzf itk.tar.gz
+          Invoke-WebRequest -Uri "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-$env:DCMTK_VERSION.tar.gz" -OutFile dcmtk.tar.gz
+          tar xzf dcmtk.tar.gz
+
+          cmake -S "$deps\src\InsightToolkit-$env:ITK_VERSION" -B "$deps\itk-build" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$prefix" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_TESTING=OFF `
+            -DBUILD_EXAMPLES=OFF `
+            -DITK_USE_SYSTEM_ZLIB=OFF `
+            -DModule_ITKReview=ON
+          if ($LASTEXITCODE -ne 0) { throw "ITK configure failed" }
+          cmake --build "$deps\itk-build" --config Release --target INSTALL -- /m
+          if ($LASTEXITCODE -ne 0) { throw "ITK build failed" }
+
+          # DCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF keeps DCMTK from forcing /MT, so it
+          # uses the same /MD runtime as ITK and plastimatch -- this mirrors what
+          # SuperBuild/External_DCMTK.cmake does. BUILD_APPS=OFF skips the ~30 command line
+          # tools; plastimatch only links the libraries. The optional backends are off to
+          # keep the static link self-contained (costs deflated transfer syntax, TLS, and
+          # DICOM character-set conversion).
+          cmake -S "$deps\src\dcmtk-DCMTK-$env:DCMTK_VERSION" -B "$deps\dcmtk-build" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$prefix" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_APPS=OFF `
+            -DDCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF `
+            -DDCMTK_WITH_ZLIB=OFF `
+            -DDCMTK_WITH_OPENSSL=OFF `
+            -DDCMTK_WITH_PNG=OFF `
+            -DDCMTK_WITH_TIFF=OFF `
+            -DDCMTK_WITH_XML=OFF `
+            -DDCMTK_WITH_ICONV=OFF `
+            -DDCMTK_WITH_ICU=OFF `
+            -DDCMTK_WITH_SNDFILE=OFF `
+            -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
+          if ($LASTEXITCODE -ne 0) { throw "DCMTK configure failed" }
+          cmake --build "$deps\dcmtk-build" --config Release --target INSTALL -- /m
+          if ($LASTEXITCODE -ne 0) { throw "DCMTK build failed" }
+
+      # PLM_PACKAGE_WIX=OFF selects the ZIP CPack generator instead of the default WIX
+      # installer, so all three platforms produce a plain archive. Building the MSI would
+      # additionally depend on the WiX toolset being present on the runner.
+      - name: Configure plastimatch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = "$env:RUNNER_TEMP\deps\install"
+          $itkDir = (Get-Item "$prefix\lib\cmake\ITK-*\ITKConfig.cmake").Directory.FullName
+          # DCMTK installs its config under <prefix>\cmake on Windows and
+          # <prefix>/lib/cmake/dcmtk elsewhere, so locate it rather than hardcoding.
+          $dcmtkDir = (Get-ChildItem -Path $prefix -Recurse -Filter DCMTKConfig.cmake | Select-Object -First 1).Directory.FullName
+          Write-Host "ITK_DIR=$itkDir"
+          Write-Host "DCMTK_DIR=$dcmtkDir"
+          cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}\build" -G "Visual Studio 17 2022" -A x64 `
+            -DBUILD_SHARED_LIBS=OFF `
+            "-DITK_DIR=$itkDir" `
+            "-DDCMTK_DIR=$dcmtkDir" `
+            -DPLM_SYSTEM_ITK=YES `
+            -DPLM_SYSTEM_DCMTK=YES `
+            -DPLM_CONFIG_ENABLE_CUDA=OFF `
+            -DPLM_CONFIG_ENABLE_OPENCL=OFF `
+            -DPLM_CONFIG_ENABLE_QT=OFF `
+            -DPLM_CONFIG_ENABLE_OPENMP=ON `
+            -DPLM_PREFER_SYSTEM_DLIB=OFF `
+            -DPLM_PACKAGE_WIX=OFF `
+            -DPLM_BUILD_TESTING=ON
+          if ($LASTEXITCODE -ne 0) { throw "plastimatch configure failed" }
+
+      - name: Build plastimatch
+        id: build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build "${{ github.workspace }}\build" --config Release -- /m
+          if ($LASTEXITCODE -ne 0) { throw "plastimatch build failed" }
+
+      # Keep the dependency cache when a later step (test, package) fails, but never
+      # snapshot a tree from a failed or cancelled dependency build: a partial entry is
+      # still a cache hit, which would skip this save and poison every later run.
+      - name: Save ITK/DCMTK cache
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.validate-cache.outputs.ok != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}\deps\install
+          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
+
+      # Informational for now: the regression suite has never run in GitHub Actions, so it
+      # is not yet gating. Drop continue-on-error once it is known green here.
+      - name: Test
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}\build
+        run: ctest -C Release --output-on-failure
+
+      - name: Package
+        working-directory: ${{ github.workspace }}\build
+        run: cpack -G ZIP -C Release
+
+      # CPack alone produces plastimatch-1.10.0-win64.zip for every build. Rename so the
+      # asset carries the platform, build date and commit: per-platform packages then don't
+      # collide as release assets, and finalize-latest.yml can tell which commit an asset
+      # came from.
+      - name: Name the package
+        id: pkg
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = (Get-ChildItem -Filter 'plastimatch-*.zip' | Select-Object -First 1).Name
+          $ver = [regex]::Match($src, '^plastimatch-([0-9][0-9.]*)-').Groups[1].Value
+          $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
+          $short = (git rev-parse --short=7 HEAD).Trim()
+          $dst = "plastimatch-$ver-win64-$stamp-$short.zip"
+          Move-Item $src $dst
+          Expand-Archive -Path $dst -DestinationPath _peek -Force
+          Get-ChildItem -Recurse _peek | Select-Object -ExpandProperty FullName
+          Remove-Item -Recurse -Force _peek
+          "name=$dst" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload package as artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: plastimatch-windows-package
+          path: ${{ github.workspace }}\build\${{ steps.pkg.outputs.name }}
+
+      - name: Upload package as artifact (retry)
+        if: steps.upload-artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: plastimatch-windows-package
+          path: ${{ github.workspace }}\build\${{ steps.pkg.outputs.name }}
+
+      # Tagged (stable) releases only. The rolling "latest" prerelease is (re)created by
+      # finalize-latest.yml once every platform has finished building.
+      - name: Publish package to the release
+        if: ${{ github.event_name == 'release' && github.event.release.tag_name != 'latest' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}/build
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.pkg.outputs.name }}" --clobber

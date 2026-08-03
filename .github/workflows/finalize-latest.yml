@@ -1,0 +1,108 @@
+name: Finalize latest prerelease
+
+# Recreates the rolling "latest" prerelease after the per-platform CI builds finish on
+# master. The platform workflows only upload build artifacts; this job gathers them and
+# (re)creates the "latest" release in one place.
+#
+# This workflow fires once per platform-workflow completion, but only proceeds when every
+# platform has a successful run for the same commit -- earlier firings defer. A
+# delete+recreate must not run inside the four parallel build jobs (linux, mac-arm64,
+# mac-x86_64, win) or they would wipe each other's assets, hence a single coordinator here.
+#
+# GITHUB_TOKEN is used on purpose: release and tag events it creates do not trigger other
+# workflows, so there is no build loop.
+#
+# Adapted from the equivalent workflow in QIICR/dcmqi.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI Linux"
+      - "CI macOS"
+      - "CI Windows"
+    types:
+      - completed
+
+# Serialize per commit so the three build completions don't recreate the release at once.
+concurrency:
+  group: finalize-latest-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Recreate latest prerelease
+    # Successful master-push builds only. Tagged (stable) releases are published by the
+    # build workflows themselves and must not be touched here.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # manage the "latest" release and its tag
+      actions: read     # list sibling build runs and download their artifacts
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      # Workflow files whose artifacts together make up a complete "latest" release.
+      BUILD_WORKFLOWS: "cmake-linux.yml cmake-macos.yml cmake-win.yml"
+    steps:
+      - name: Collect platform packages for this commit
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for wf in $BUILD_WORKFLOWS; do
+            run_id=$(gh run list --workflow "$wf" --branch master --event push --limit 50 \
+              --json databaseId,headSha,conclusion \
+              --jq "[.[] | select(.headSha == \"$SHA\" and .conclusion == \"success\")][0].databaseId")
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "::notice::$wf has no successful run for $SHA yet; deferring to a later build completion."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Downloading artifacts from $wf run $run_id"
+            gh run download "$run_id" --dir dist
+          done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recreate the latest prerelease
+        if: steps.collect.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          SHORT=${SHA:0:7}
+          # Keep only packages built from this exact commit. The date+sha suffix is added by
+          # the "Name the package" step in each build workflow, e.g.
+          # plastimatch-1.10.0-linux-20260803-69e57cf.zip.
+          ASSETS=()
+          while IFS= read -r f; do
+            ASSETS+=("$f")
+          done < <(find dist -type f -name "*-$SHORT.zip" | sort)
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "::error::No packages matching commit $SHORT were found under dist/."
+            find dist -type f || true
+            exit 1
+          fi
+          echo "Publishing ${#ASSETS[@]} asset(s) for $SHORT:"
+          printf '  %s\n' "${ASSETS[@]}"
+
+          NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
+          # Move the rolling "latest" tag to this commit, then replace the release.
+          #
+          # The tag is moved via the git refs API (PATCH, or POST the first time it is
+          # created) rather than `gh release delete --cleanup-tag`, which deletes the ref and
+          # immediately recreates the same one; that delete/recreate race intermittently
+          # returns "HTTP 403: Resource not accessible by integration" on create.
+          # Reusing the "latest" tag keeps the .../releases/download/latest/... URLs stable,
+          # and the release's created_at follows the target commit's date, so it sorts to the
+          # top of the Releases page.
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$SHA" -F force=true >/dev/null 2>&1 \
+            || gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/latest" -f sha="$SHA" >/dev/null
+          # Delete only the release (keep the tag we just moved), then recreate it here.
+          gh release delete latest --yes || true
+          gh release create latest "${ASSETS[@]}" \
+            --prerelease \
+            --target "$SHA" \
+            --title "Latest (updated on $NOW)" \
+            --notes "Continuous build from commit \`$SHORT\` on $NOW."

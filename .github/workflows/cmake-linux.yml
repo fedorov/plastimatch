@@ -1,0 +1,223 @@
+name: CI Linux
+
+# Builds plastimatch on Linux and uploads a self-contained binary package.
+#
+# Dependency strategy (shared by all three platform workflows):
+#
+#   plastimatch's in-tree superbuild is dead code -- the block in src/CMakeLists.txt that
+#   drives SuperBuild/External_ITK.cmake and SuperBuild/External_DCMTK.cmake is wrapped in
+#   `if (false)`, and External_DCMTK.cmake still points at the retired offis ftp:// server.
+#   So ITK and DCMTK have to be supplied by the CI job.
+#
+#   We build them from source as static Release libraries rather than using the distro
+#   packages. Distro ITK/DCMTK are shared libraries under /usr/lib, so the resulting
+#   plastimatch would only run on a machine that already has them installed -- not much use
+#   as a downloadable package. Static builds cost ~25 min once and are then restored from
+#   the actions cache, and give the same ITK/DCMTK version on Linux, macOS and Windows.
+#
+#   Everything else plastimatch can use -- dlib, liblbfgs, inih, devillard, specfun,
+#   nkidecompress, rapidjson, sqlite3 -- is bundled under libs/ and built from the tree
+#   (PLM_PREFER_SYSTEM_DLIB=OFF). The optional accelerators (FFTW, nlopt, libyaml, Octave,
+#   wxWidgets, Qt, CUDA, OpenCL) are left out so all three platforms produce a
+#   feature-identical package; add them per-platform later if wanted.
+#
+# Note on portability: the package is built on Ubuntu 24.04, so it needs glibc >= 2.39.
+# Building inside a manylinux/dockcross image (as dcmqi does) would lower that floor.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ITK_VERSION: 5.4.0
+  DCMTK_VERSION: 3.6.8
+  # Bump to force a rebuild of the cached dependencies.
+  DEPS_CACHE_EPOCH: v1
+
+jobs:
+  build-linux:
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    permissions:
+      contents: write
+
+    steps:
+      # fetch-depth: 0 is required: CMakeLists.txt runs `git describe --always` to compute
+      # PLASTIMATCH_VERSION_STRING and PLM_VERSION_TWEAK.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build
+          cmake --version
+          ninja --version
+
+      - name: Restore ITK/DCMTK cache
+        id: cache-deps
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/install
+          key: linux-x86_64-deps-${{ env.DEPS_CACHE_EPOCH }}-itk${{ env.ITK_VERSION }}-dcmtk${{ env.DCMTK_VERSION }}
+
+      # A cache saved from a half-finished dependency build has the CMake config files but
+      # not the libraries, which only shows up much later as a link error. Require a real
+      # library from each project before trusting the cache.
+      - name: Validate restored cache
+        id: validate-cache
+        run: |
+          ok=false
+          if [ "${{ steps.cache-deps.outputs.cache-hit }}" == "true" ]; then
+            ok=true
+            ls "${{ runner.temp }}"/deps/install/lib/libITKCommon-*.a >/dev/null 2>&1 || { echo "cached ITK is incomplete"; ok=false; }
+            ls "${{ runner.temp }}"/deps/install/lib/libdcmdata.a    >/dev/null 2>&1 || { echo "cached DCMTK is incomplete"; ok=false; }
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable dependency cache: $ok"
+
+      - name: Build ITK and DCMTK
+        if: steps.validate-cache.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          prefix="$deps/install"
+          mkdir -p "$deps/src" && cd "$deps/src"
+
+          curl -fsSL -o itk.tar.gz \
+            "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v${ITK_VERSION}/InsightToolkit-${ITK_VERSION}.tar.gz"
+          tar xzf itk.tar.gz
+          curl -fsSL -o dcmtk.tar.gz \
+            "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-${DCMTK_VERSION}.tar.gz"
+          tar xzf dcmtk.tar.gz
+
+          cmake -S "$deps/src/InsightToolkit-${ITK_VERSION}" -B "$deps/itk-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DITK_USE_SYSTEM_ZLIB=OFF \
+            -DModule_ITKReview=ON
+          cmake --build "$deps/itk-build" --target install
+
+          # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
+          # libraries. The optional backends are off to keep the static link
+          # self-contained (costs deflated transfer syntax, TLS, and DICOM character-set
+          # conversion) and to keep the three platforms configured identically.
+          cmake -S "$deps/src/dcmtk-DCMTK-${DCMTK_VERSION}" -B "$deps/dcmtk-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_APPS=OFF \
+            -DDCMTK_WITH_ZLIB=OFF \
+            -DDCMTK_WITH_OPENSSL=OFF \
+            -DDCMTK_WITH_PNG=OFF \
+            -DDCMTK_WITH_TIFF=OFF \
+            -DDCMTK_WITH_XML=OFF \
+            -DDCMTK_WITH_ICONV=OFF \
+            -DDCMTK_WITH_ICU=OFF \
+            -DDCMTK_WITH_SNDFILE=OFF \
+            -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
+          cmake --build "$deps/dcmtk-build" --target install
+
+      - name: Configure plastimatch
+        run: |
+          set -euo pipefail
+          prefix="${{ runner.temp }}/deps/install"
+          itk_dir=$(dirname "$(ls "$prefix"/lib/cmake/ITK-*/ITKConfig.cmake)")
+          echo "ITK_DIR=$itk_dir"
+          cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DITK_DIR="$itk_dir" \
+            -DDCMTK_DIR="$prefix/lib/cmake/dcmtk" \
+            -DPLM_SYSTEM_ITK=YES \
+            -DPLM_SYSTEM_DCMTK=YES \
+            -DPLM_CONFIG_ENABLE_CUDA=OFF \
+            -DPLM_CONFIG_ENABLE_OPENCL=OFF \
+            -DPLM_CONFIG_ENABLE_QT=OFF \
+            -DPLM_CONFIG_ENABLE_OPENMP=ON \
+            -DPLM_CONFIG_ENABLE_SSE2=ON \
+            -DPLM_PREFER_SYSTEM_DLIB=OFF \
+            -DPLM_BUILD_TESTING=ON
+
+      - name: Build plastimatch
+        id: build
+        run: cmake --build "${{ github.workspace }}/build"
+
+      # See the comment on the equivalent step in cmake-macos.yml: keep the dependency
+      # cache when a later step (test, package) fails, but never snapshot a tree from a
+      # failed or cancelled dependency build -- a partial entry is a cache hit, which would
+      # skip this save and poison every later run.
+      - name: Save ITK/DCMTK cache
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.validate-cache.outputs.ok != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/install
+          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
+
+      # Informational for now: the regression suite has never run in GitHub Actions, so it
+      # is not yet gating. Drop continue-on-error once it is known green here.
+      - name: Test
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}/build
+        run: ctest --output-on-failure
+
+      - name: Package
+        working-directory: ${{ github.workspace }}/build
+        run: cpack -G ZIP
+
+      # CPack alone produces plastimatch-1.10.0-Linux.zip for every build. Rename so the
+      # asset carries the platform, build date and commit: per-platform packages then don't
+      # collide as release assets, and finalize-latest.yml can tell which commit an asset
+      # came from.
+      - name: Name the package
+        id: pkg
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+          src=$(ls plastimatch-*.zip)
+          ver=$(echo "$src" | sed -E 's/^plastimatch-([0-9][0-9.]*)-.*/\1/')
+          dst="plastimatch-${ver}-linux-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD).zip"
+          mv "$src" "$dst"
+          unzip -l "$dst"
+          echo "name=$dst" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package as artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: plastimatch-linux-package
+          path: ${{ github.workspace }}/build/${{ steps.pkg.outputs.name }}
+
+      - name: Upload package as artifact (retry)
+        if: steps.upload-artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: plastimatch-linux-package
+          path: ${{ github.workspace }}/build/${{ steps.pkg.outputs.name }}
+
+      # Tagged (stable) releases only. The rolling "latest" prerelease is (re)created by
+      # finalize-latest.yml once every platform has finished building.
+      - name: Publish package to the release
+        if: ${{ github.event_name == 'release' && github.event.release.tag_name != 'latest' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}/build
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.pkg.outputs.name }}" --clobber
