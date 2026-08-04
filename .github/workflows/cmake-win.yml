@@ -420,8 +420,11 @@ jobs:
           & $bin convert --input "$smoke\dcm" --output-img "$smoke\rt.mha"
           if (-not (Test-Path "$smoke\rt.mha")) {
             throw "packaged binary could not read back DICOM -- is the DCMTK data dictionary compiled in?" }
-          $hdr = & $bin header "$smoke\rt.mha"
-          $hdr
+          # -join makes this a single string on purpose: PowerShell's -notmatch applied to
+          # an array returns the non-matching elements, not a boolean, and a non-empty array
+          # is truthy -- so the array form threw even when the geometry was correct.
+          $hdr = (& $bin header "$smoke\rt.mha") -join "`n"
+          Write-Host $hdr
           if ($hdr -notmatch 'Size = 24 24 24') { throw "DICOM round-trip lost image geometry" }
           Write-Host "packaged binary OK: image I/O, DICOM write and DICOM read all work"
 
