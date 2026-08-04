@@ -241,6 +241,16 @@ jobs:
       # Apple's math.h signals by defining __MATH_H__, so force-including it selects the
       # correct <math.h> path. Only libpng's C sources include pngpriv.h, so C flags suffice.
       #
+      # -Dfdopen=fdopen fixes dlib's bundled zlib, which is compiled alongside the bundled
+      # libpng. Its zutil.h has the same TARGET_OS_MAC assumption and does
+      # `#define fdopen(fd,mode) NULL`, which then mangles the real fdopen declaration when
+      # gzguts.h pulls in <stdio.h> afterwards. Pre-defining fdopen to itself makes zutil.h's
+      # `#ifndef fdopen` false, so the bogus macro is never created and real fdopen survives
+      # (unlike -include stdio.h, which would leave gz* calls returning NULL).
+      #
+      # Verified locally on macOS 15: all 33 bundled zlib + libpng sources compile with these
+      # two flags and 19 of them fail without them.
+      #
       # Using Homebrew's libpng/jpeg-turbo instead does not work: jpeg-turbo 3.x exports
       # 12- and 16-bit entry points (jpeg12_read_scanlines, jpeg16_read_scanlines) under the
       # same names DCMTK's bundled libijg12/libijg16 use, so linking plastimatch fails with
@@ -261,7 +271,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_C_FLAGS="-include math.h" \
+            -DCMAKE_C_FLAGS="-include math.h -Dfdopen=fdopen" \
             -DBUILD_SHARED_LIBS=OFF \
             -DDLIB_NO_GUI_SUPPORT=ON \
             -DDLIB_PNG_SUPPORT=ON \

@@ -35,7 +35,7 @@ env:
   # one rebuilds only that dependency -- useful after changing its cmake options, which are
   # not themselves part of the cache key.
   ITK_CACHE_EPOCH: v2
-  DCMTK_CACHE_EPOCH: v2
+  DCMTK_CACHE_EPOCH: v3
   DLIB_CACHE_EPOCH: v3
 
 jobs:
@@ -140,9 +140,13 @@ jobs:
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
           echo "Usable DCMTK cache: $ok"
 
-      # DCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF keeps DCMTK from forcing /MT, so it uses the
-      # same /MD runtime as ITK and plastimatch -- this mirrors what
-      # SuperBuild/External_DCMTK.cmake does.
+      # DCMTK must use the same C runtime as ITK, dlib and plastimatch, all of which take
+      # CMake's default /MD. DCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF alone did not achieve
+      # that -- DCMTK still produced MT_StaticRelease objects and linking plastimatch failed
+      # with LNK2038 "mismatch detected for 'RuntimeLibrary'". CMAKE_MSVC_RUNTIME_LIBRARY is
+      # no help either: DCMTK 3.6.8 declares cmake_minimum_required(3.10), so policy CMP0091
+      # is OLD and the variable is ignored. Pin the runtime by spelling out the Release
+      # flags, which otherwise match CMake's own defaults.
       #
       # CMAKE_CXX_STANDARD=17 matters: left at its default, DCMTK 3.6.8 reports "C++11
       # features disabled" and falls back to the pre-C++11 OFrvalue emulation in
@@ -172,6 +176,8 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_APPS=OFF `
             -DDCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF `
+            "-DCMAKE_C_FLAGS_RELEASE=/MD /O2 /Ob2 /DNDEBUG" `
+            "-DCMAKE_CXX_FLAGS_RELEASE=/MD /O2 /Ob2 /DNDEBUG" `
             -DDCMTK_WITH_ZLIB=OFF `
             -DDCMTK_WITH_OPENSSL=OFF `
             -DDCMTK_WITH_PNG=OFF `
