@@ -67,9 +67,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      # libpng/jpeg-turbo are for dlib -- see the comment on the "Build dlib" step.
       - name: Install build tools
         run: |
-          brew install ninja
+          brew install ninja libpng jpeg-turbo
           cmake --version
           ninja --version
 
@@ -229,10 +230,14 @@ jobs:
       # png_loader.h and jpeg_loader.h, and with support off both spell their guard as
       # COMPILE_TIME_ASSERT(sizeof(T) == 0). T is an undeclared, non-dependent name, so that
       # is a hard parse-time error rather than one deferred to instantiation.
-      # PNG_FOUND=0/JPEG_FOUND=0 take the deliberate early-out in dlib's
-      # cmake_utils/find_lib{png,jpeg}.cmake ("if (DEFINED ..._FOUND) return()"), which makes
-      # dlib statically compile its own bundled libpng/zlib/libjpeg into libdlib.a instead of
-      # linking the system copies -- so the package stays self-contained.
+      # Unlike Linux and Windows, macOS cannot use dlib's own bundled libpng: that copy is
+      # libpng 1.6.37, whose pngpriv.h treats any Apple platform as Mac-classic (Apple's
+      # TargetConditionals.h defines TARGET_OS_MAC) and tries to #include <fp.h>, gone since
+      # Mac OS 9 -- "fatal error: 'fp.h' file not found". dlib 20 vendors the same copy, so a
+      # version bump does not help. Point dlib at Homebrew's libpng/libjpeg instead, giving
+      # the *static* archives explicitly so plastimatch does not end up linking
+      # /opt/homebrew dylibs that users would not have. The only external library left in the
+      # package is libz, which ships with macOS.
       - name: Build dlib
         id: build-dlib
         if: steps.check-dlib.outputs.ok != 'true'
@@ -243,6 +248,20 @@ jobs:
           curl -fsSL -o dlib.tar.gz \
             "https://github.com/davisking/dlib/archive/refs/tags/v${DLIB_VERSION}.tar.gz"
           tar xzf dlib.tar.gz
+
+          png_prefix=$(brew --prefix libpng)
+          jpeg_prefix=$(brew --prefix jpeg-turbo)
+          png_lib=$(find "$png_prefix/lib" -name 'libpng*.a' -print -quit)
+          jpeg_lib=$(find "$jpeg_prefix/lib" -name 'libjpeg.a' -print -quit)
+          # Fail here rather than silently letting dlib fall back to its own unbuildable copy.
+          for lib in "$png_lib" "$jpeg_lib"; do
+            if [ -z "$lib" ] || [ ! -f "$lib" ]; then
+              echo "::error::Could not find a static libpng/libjpeg under $png_prefix / $jpeg_prefix"
+              exit 1
+            fi
+          done
+          echo "static libpng:  $png_lib"
+          echo "static libjpeg: $jpeg_lib"
           cmake -S "$deps/src/dlib-${DLIB_VERSION}" -B "$deps/build-dlib" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$deps/dlib" \
@@ -252,9 +271,11 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DDLIB_NO_GUI_SUPPORT=ON \
             -DDLIB_PNG_SUPPORT=ON \
-            -DPNG_FOUND=0 \
+            -DPNG_LIBRARY="$png_lib" \
+            -DPNG_PNG_INCLUDE_DIR="$png_prefix/include" \
             -DDLIB_JPEG_SUPPORT=ON \
-            -DJPEG_FOUND=0 \
+            -DJPEG_LIBRARY="$jpeg_lib" \
+            -DJPEG_INCLUDE_DIR="$jpeg_prefix/include" \
             -DDLIB_GIF_SUPPORT=OFF \
             -DDLIB_WEBP_SUPPORT=OFF \
             -DDLIB_USE_BLAS=OFF \
