@@ -55,7 +55,7 @@ env:
   # one rebuilds only that dependency -- useful after changing its cmake options, which are
   # not themselves part of the cache key.
   ITK_CACHE_EPOCH: v2
-  DCMTK_CACHE_EPOCH: v2
+  DCMTK_CACHE_EPOCH: v3
   DLIB_CACHE_EPOCH: v3
 
 jobs:
@@ -169,6 +169,17 @@ jobs:
       # libraries. The optional backends are off to keep the static link self-contained
       # (costs deflated transfer syntax, TLS, and DICOM character-set conversion) and to keep
       # the three platforms configured identically.
+      #
+      # DCMTK_DEFAULT_DICT=builtin compiles the DICOM data dictionary into the library.
+      # DCMTK defaults it to "builtin" only on Windows and to "external" on Unix, where the
+      # dictionary is instead loaded at runtime from a file under the install prefix. That
+      # file is not part of the plastimatch package, so a package built with the external
+      # dictionary has no dictionary at all on a user's machine: DCMTK then resolves no VRs
+      # and every DICOM read fails with "Sorry, could not load input as any known type"
+      # (exit status 0, no output file). ctest does not catch it because the build machine
+      # still has the file at the compiled-in path -- hence the packaged-binary smoke test
+      # further down. DCMTK_ENABLE_PRIVATE_TAGS adds the private-tag dictionary that vendor
+      # RT data relies on.
       - name: Build DCMTK
         id: build-dcmtk
         if: steps.check-dcmtk.outputs.ok != 'true'
@@ -195,6 +206,8 @@ jobs:
             -DDCMTK_WITH_ICONV=OFF \
             -DDCMTK_WITH_ICU=OFF \
             -DDCMTK_WITH_SNDFILE=OFF \
+            -DDCMTK_DEFAULT_DICT=builtin \
+            -DDCMTK_ENABLE_PRIVATE_TAGS=ON \
             -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
           cmake --build "$deps/build-dcmtk" --target install
 
@@ -349,6 +362,36 @@ jobs:
           mv "$src" "$dst"
           unzip -l "$dst"
           echo "name=$dst" >> "$GITHUB_OUTPUT"
+
+      # Exercise the packaged binary, not the build tree. ctest runs against the build
+      # directory, where files that the package omits are still lying around -- that is how a
+      # DCMTK built with an external data dictionary passed 578/578 tests while every DICOM
+      # read in the shipped zip failed. This extracts the archive somewhere clean, scrubs
+      # DCMDICTPATH so no host dictionary can be picked up, and checks a real DICOM
+      # round-trip. Note that `plastimatch convert` exits 0 even when it cannot read its
+      # input, so the assertions are on the output files, not the exit status.
+      - name: Smoke-test the package
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+          unset DCMDICTPATH
+          smoke=$(mktemp -d)
+          unzip -q "${{ steps.pkg.outputs.name }}" -d "$smoke"
+          bin=$(find "$smoke" -type f -name plastimatch -perm -u+x -print -quit)
+          echo "testing $bin"
+          "$bin" --version
+          "$bin" synth --output "$smoke/s.mha" --pattern sphere --dim 24 \
+            --origin "-24 -24 -24" --spacing "2 2 2" --center "0 0 0" --radius 12
+          test -s "$smoke/s.mha" || { echo "::error::packaged binary could not write an image"; exit 1; }
+          "$bin" convert --input "$smoke/s.mha" --output-dicom "$smoke/dcm" --output-type short
+          test -n "$(ls -A "$smoke/dcm" 2>/dev/null)" || { echo "::error::packaged binary wrote no DICOM"; exit 1; }
+          "$bin" convert --input "$smoke/dcm" --output-img "$smoke/rt.mha"
+          test -s "$smoke/rt.mha" || {
+            echo "::error::packaged binary could not read back DICOM -- is the DCMTK data dictionary compiled in?"
+            exit 1; }
+          "$bin" header "$smoke/rt.mha" | tee "$smoke/hdr.txt"
+          grep -q "Size = 24 24 24" "$smoke/hdr.txt" || { echo "::error::DICOM round-trip lost image geometry"; exit 1; }
+          echo "packaged binary OK: image I/O, DICOM write and DICOM read all work"
 
       - name: Upload package as artifact
         id: upload-artifact
