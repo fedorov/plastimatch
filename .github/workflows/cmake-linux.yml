@@ -15,7 +15,9 @@ name: CI Linux
 #   as a downloadable package. Static builds cost ~25 min once and are then restored from
 #   the actions cache, and give the same ITK/DCMTK version on Linux, macOS and Windows.
 #
-#   dlib is built the same way, for a different reason: see the DLIB_VERSION comment below.
+#   dlib and zlib are built the same way -- dlib for the reason in the DLIB_VERSION
+#   comment below, and zlib so DCMTK can read deflated DICOM without depending on a
+#   system copy.
 #
 #   Each dependency gets its own install prefix, cache entry and save step, so a failure in
 #   one does not discard the others: if DCMTK breaks, the ITK cache is still banked and the
@@ -45,6 +47,7 @@ concurrency:
 env:
   ITK_VERSION: 5.4.0
   DCMTK_VERSION: 3.6.8
+  ZLIBNG_VERSION: 2.3.3
   # The bundled libs/dlib-19.1 cannot be used: it still relies on std::binary_function,
   # removed in C++17, and ITK 5.4 forces C++17 on consumers via
   # INTERFACE_COMPILE_FEATURES. plastimatch supports linking a real dlib -- the dlib .cpp
@@ -55,7 +58,8 @@ env:
   # one rebuilds only that dependency -- useful after changing its cmake options, which are
   # not themselves part of the cache key.
   ITK_CACHE_EPOCH: v2
-  DCMTK_CACHE_EPOCH: v3
+  ZLIB_CACHE_EPOCH: v1
+  DCMTK_CACHE_EPOCH: v4
   DLIB_CACHE_EPOCH: v3
 
 jobs:
@@ -139,6 +143,59 @@ jobs:
           key: ${{ steps.cache-itk.outputs.cache-primary-key }}
 
       ##------------------------------------------------------------------------------
+      ##  zlib (zlib-ng in zlib-compatible mode)
+      ##------------------------------------------------------------------------------
+      - name: Restore zlib cache
+        id: cache-zlib
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/zlib
+          key: linux-x86_64-zlib-${{ env.ZLIB_CACHE_EPOCH }}-${{ env.ZLIBNG_VERSION }}
+
+      - name: Check zlib cache
+        id: check-zlib
+        run: |
+          ok=false
+          if [ "${{ steps.cache-zlib.outputs.cache-hit }}" == "true" ] \
+             && ls "${{ runner.temp }}"/deps/zlib/lib/lib*.a >/dev/null 2>&1; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable zlib cache: $ok"
+
+      # zlib-ng in ZLIB_COMPAT mode provides the classic zlib API that DCMTK expects.
+      # ZLIB_SYMBOL_PREFIX is the important part: ITK links its own bundled zlib into the
+      # same executable, so without a prefix the two copies would collide at link time.
+      # (This mirrors what dcmqi does in CMakeExternals/zlib.cmake.)
+      - name: Build zlib
+        id: build-zlib
+        if: steps.check-zlib.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          mkdir -p "$deps/src" && cd "$deps/src"
+          curl -fsSL -o zlib.tar.gz \
+            "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIBNG_VERSION}.tar.gz"
+          tar xzf zlib.tar.gz
+          cmake -S "$deps/src/zlib-ng-${ZLIBNG_VERSION}" -B "$deps/build-zlib" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$deps/zlib" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=ON \
+            -DZLIB_SYMBOL_PREFIX=plm_zlib_ \
+            -DZLIB_ENABLE_TESTS=OFF \
+            -DWITH_GTEST=OFF
+          cmake --build "$deps/build-zlib" --target install
+
+      - name: Save zlib cache
+        if: ${{ !cancelled() && steps.build-zlib.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/zlib
+          key: ${{ steps.cache-zlib.outputs.cache-primary-key }}
+
+      ##------------------------------------------------------------------------------
       ##  DCMTK
       ##------------------------------------------------------------------------------
       - name: Restore DCMTK cache
@@ -167,7 +224,8 @@ jobs:
       #
       # BUILD_APPS=OFF skips the ~30 command line tools; plastimatch only links the
       # libraries. The optional backends are off to keep the static link self-contained
-      # (costs deflated transfer syntax, TLS, and DICOM character-set conversion) and to keep
+      # (costs TLS and DICOM character-set conversion; zlib is enabled below, so deflate is
+      # supported) and to keep
       # the three platforms configured identically.
       #
       # DCMTK_DEFAULT_DICT=builtin compiles the DICOM data dictionary into the library.
@@ -179,7 +237,19 @@ jobs:
       # (exit status 0, no output file). ctest does not catch it because the build machine
       # still has the file at the compiled-in path -- hence the packaged-binary smoke test
       # further down. DCMTK_ENABLE_PRIVATE_TAGS adds the private-tag dictionary that vendor
-      # RT data relies on.
+      # RT data relies on.      #
+      # zlib is enabled so DCMTK can read and write Deflated Explicit VR Little Endian
+      # datasets. Two things are needed, both learned from dcmqi's CMakeExternals/DCMTK.cmake:
+      #   1. DCMTK_USE_FIND_PACKAGE=ON. On MSVC, DCMTK defaults this OFF and instead globs a
+      #      pre-built "support libraries" directory for zlib_d.lib/zlib_o.lib. Our layout is
+      #      not that, so DCMTK would silently disable zlib -- exactly what shipped in
+      #      dcmqi 1.5.5, whose Windows build could not load deflated data. Linux and macOS
+      #      already default it ON, so only Windows was ever affected; forcing it ON keeps
+      #      all platforms on the same find_package(ZLIB) path.
+      #   2. The ZLIB_* hints point that find_package(ZLIB) at our symbol-prefixed zlib-ng
+      #      rather than a system copy.
+      # find_package(ZLIB) is QUIET here and DCMTK downgrades a miss to a warning, so the
+      # configure output is checked below rather than trusted.
       - name: Build DCMTK
         id: build-dcmtk
         if: steps.check-dcmtk.outputs.ok != 'true'
@@ -190,6 +260,9 @@ jobs:
           curl -fsSL -o dcmtk.tar.gz \
             "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-${DCMTK_VERSION}.tar.gz"
           tar xzf dcmtk.tar.gz
+          # zlib-ng's static library name varies by platform and config, so locate it.
+          zlib_lib=$(find "$deps/zlib/lib" -name 'lib*.a' -print -quit)
+          echo "ZLIB_LIBRARY=$zlib_lib"
           cmake -S "$deps/src/dcmtk-DCMTK-${DCMTK_VERSION}" -B "$deps/build-dcmtk" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$deps/dcmtk" \
@@ -198,7 +271,11 @@ jobs:
             -DDCMTK_ENABLE_CXX11=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_APPS=OFF \
-            -DDCMTK_WITH_ZLIB=OFF \
+            -DDCMTK_WITH_ZLIB=ON \
+            -DDCMTK_USE_FIND_PACKAGE=ON \
+            -DZLIB_ROOT="$deps/zlib" \
+            -DZLIB_INCLUDE_DIR="$deps/zlib/include" \
+            -DZLIB_LIBRARY="$zlib_lib" \
             -DDCMTK_WITH_OPENSSL=OFF \
             -DDCMTK_WITH_PNG=OFF \
             -DDCMTK_WITH_TIFF=OFF \
@@ -208,7 +285,14 @@ jobs:
             -DDCMTK_WITH_SNDFILE=OFF \
             -DDCMTK_DEFAULT_DICT=builtin \
             -DDCMTK_ENABLE_PRIVATE_TAGS=ON \
-            -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF
+            -DDCMTK_ENABLE_CHARSET_CONVERSION=OFF 2>&1 | tee "$deps/dcmtk-configure.log"
+          # DCMTK turns a zlib miss into a warning and carries on with zlib disabled, which
+          # would silently cost deflate support in the shipped package. Fail loudly instead.
+          if ! grep -q "DCMTK ZLIB support will be enabled" "$deps/dcmtk-configure.log"; then
+            echo "::error::DCMTK did not enable zlib -- deflated DICOM would be unreadable"
+            grep -iE "zlib" "$deps/dcmtk-configure.log" || true
+            exit 1
+          fi
           cmake --build "$deps/build-dcmtk" --target install
 
       - name: Save DCMTK cache
