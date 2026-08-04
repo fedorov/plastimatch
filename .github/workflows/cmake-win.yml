@@ -361,10 +361,10 @@ jobs:
           cmake --build "${{ github.workspace }}\build" --config Release -- /m
           if ($LASTEXITCODE -ne 0) { throw "plastimatch build failed" }
 
-      # Informational for now: the regression suite has never run in GitHub Actions, so it
-      # is not yet gating. Drop continue-on-error once it is known green here.
+      # Gating. The suite runs 578 tests in well under a minute on Linux/macOS and passes
+      # 100% on all four packages, so a failure here should block the artifact and the
+      # rolling release rather than be reported and ignored.
       - name: Test
-        continue-on-error: true
         working-directory: ${{ github.workspace }}\build
         run: ctest -C Release --output-on-failure
 
