@@ -51,8 +51,12 @@ env:
   # includes in src/sys/dlib_threads.cxx are guarded by !DLIB_HAVE_LIBRARY -- so build a
   # current one instead.
   DLIB_VERSION: 19.24.9
-  # Bump to force a rebuild of every cached dependency.
-  DEPS_CACHE_EPOCH: v2
+  # Per-dependency cache epochs. Because each dependency has its own cache entry, bumping
+  # one rebuilds only that dependency -- useful after changing its cmake options, which are
+  # not themselves part of the cache key.
+  ITK_CACHE_EPOCH: v2
+  DCMTK_CACHE_EPOCH: v2
+  DLIB_CACHE_EPOCH: v3
 
 jobs:
   build-linux:
@@ -85,7 +89,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/deps/itk
-          key: linux-x86_64-itk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.ITK_VERSION }}
+          key: linux-x86_64-itk-${{ env.ITK_CACHE_EPOCH }}-${{ env.ITK_VERSION }}
 
       # A cache saved from a half-finished build would have the CMake config files but not
       # the libraries, which only surfaces much later as a link error. Require a real library.
@@ -142,7 +146,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/deps/dcmtk
-          key: linux-x86_64-dcmtk-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DCMTK_VERSION }}
+          key: linux-x86_64-dcmtk-${{ env.DCMTK_CACHE_EPOCH }}-${{ env.DCMTK_VERSION }}
 
       - name: Check DCMTK cache
         id: check-dcmtk
@@ -209,7 +213,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/deps/dlib
-          key: linux-x86_64-dlib-${{ env.DEPS_CACHE_EPOCH }}-${{ env.DLIB_VERSION }}
+          key: linux-x86_64-dlib-${{ env.DLIB_CACHE_EPOCH }}-${{ env.DLIB_VERSION }}
 
       - name: Check dlib cache
         id: check-dlib
@@ -223,8 +227,18 @@ jobs:
           echo "Usable dlib cache: $ok"
 
       # Minimal dlib: plastimatch only uses the optimization, threading, svm and command
-      # line parser headers, so the image/GUI/BLAS backends are all off to keep the static
-      # link self-contained.
+      # line parser headers, so the GUI/BLAS backends are off to keep the static link
+      # self-contained.
+      #
+      # PNG and JPEG support must stay ON even though plastimatch never loads images.
+      # dlib/image_io.h -- reached via dlib/data_io.h -- unconditionally includes
+      # png_loader.h and jpeg_loader.h, and with support off both spell their guard as
+      # COMPILE_TIME_ASSERT(sizeof(T) == 0). T is an undeclared, non-dependent name, so that
+      # is a hard parse-time error rather than one deferred to instantiation.
+      # PNG_FOUND=0/JPEG_FOUND=0 take the deliberate early-out in dlib's
+      # cmake_utils/find_lib{png,jpeg}.cmake ("if (DEFINED ..._FOUND) return()"), which makes
+      # dlib statically compile its own bundled libpng/zlib/libjpeg into libdlib.a instead of
+      # linking the system copies -- so the package stays self-contained.
       - name: Build dlib
         id: build-dlib
         if: steps.check-dlib.outputs.ok != 'true'
@@ -242,8 +256,10 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DBUILD_SHARED_LIBS=OFF \
             -DDLIB_NO_GUI_SUPPORT=ON \
-            -DDLIB_JPEG_SUPPORT=OFF \
-            -DDLIB_PNG_SUPPORT=OFF \
+            -DDLIB_PNG_SUPPORT=ON \
+            -DPNG_FOUND=0 \
+            -DDLIB_JPEG_SUPPORT=ON \
+            -DJPEG_FOUND=0 \
             -DDLIB_GIF_SUPPORT=OFF \
             -DDLIB_WEBP_SUPPORT=OFF \
             -DDLIB_USE_BLAS=OFF \
@@ -266,6 +282,13 @@ jobs:
       # dlib_INCLUDE_DIR is passed explicitly because src/CMakeLists.txt copies it into
       # DLIB_INCLUDE_DIR, which src/clp consumes as a plain include path rather than through
       # the dlib::dlib target.
+      # CMAKE_FIND_PACKAGE_PREFER_CONFIG=ON is required for dlib. On a case-insensitive
+      # filesystem (macOS), find_package(dlib) looking for "Finddlib.cmake" in MODULE mode
+      # matches plastimatch's own cmake/FindDlib.cmake, a legacy module that searches for a
+      # system dlib, fails, and prevents CONFIG mode from ever running -- so dlib_DIR was
+      # ignored as an unused variable and the bundled libs/dlib-19.1 got compiled instead.
+      # Preferring CONFIG picks up dlibConfig.cmake and makes all platforms resolve
+      # dependencies the same way; packages without a config file still fall back to MODULE.
       - name: Configure plastimatch
         run: |
           set -euo pipefail
@@ -286,6 +309,7 @@ jobs:
             -DDCMTK_DIR="$dcmtk_dir" \
             -Ddlib_DIR="$dlib_dir" \
             -Ddlib_INCLUDE_DIR="$deps/dlib/include" \
+            -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
             -DPLM_SYSTEM_ITK=YES \
             -DPLM_SYSTEM_DCMTK=YES \
             -DPLM_PREFER_SYSTEM_DLIB=ON \
