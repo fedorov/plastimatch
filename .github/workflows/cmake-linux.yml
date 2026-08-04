@@ -57,7 +57,7 @@ env:
   # Per-dependency cache epochs. Because each dependency has its own cache entry, bumping
   # one rebuilds only that dependency -- useful after changing its cmake options, which are
   # not themselves part of the cache key.
-  ITK_CACHE_EPOCH: v2
+  ITK_CACHE_EPOCH: v3
   ZLIB_CACHE_EPOCH: v1
   DCMTK_CACHE_EPOCH: v4
   DLIB_CACHE_EPOCH: v3
@@ -84,6 +84,66 @@ jobs:
           sudo apt-get install -y --no-install-recommends ninja-build
           cmake --version
           ninja --version
+
+      ##------------------------------------------------------------------------------
+      ##  zlib (zlib-ng in zlib-compatible mode)
+      ##------------------------------------------------------------------------------
+      - name: Restore zlib cache
+        id: cache-zlib
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/deps/zlib
+          key: linux-x86_64-zlib-${{ env.ZLIB_CACHE_EPOCH }}-${{ env.ZLIBNG_VERSION }}
+
+      - name: Check zlib cache
+        id: check-zlib
+        run: |
+          ok=false
+          if [ "${{ steps.cache-zlib.outputs.cache-hit }}" == "true" ] \
+             && ls "${{ runner.temp }}"/deps/zlib/lib/lib*.a >/dev/null 2>&1; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable zlib cache: $ok"
+
+      # zlib-ng in ZLIB_COMPAT mode provides the classic zlib API that DCMTK expects.
+      #
+      # This one build is shared by both ITK and DCMTK, which is mandatory rather than tidy.
+      # ITK 5.4 bundles zlib-ng too, and a second copy in the same executable collides:
+      # ZLIB_SYMBOL_PREFIX renames only the documented public API, leaving ~85 internal
+      # symbols unprefixed -- including deflateInit2 and inflateInit2, which is exactly what
+      # the linker rejected ("multiple definition of `deflateInit2'; libitkzlib-5.4.a"). So
+      # ITK is pointed at this zlib with ITK_USE_SYSTEM_ZLIB=ON and never builds its own.
+      # dcmqi shares a single zlib across ITK and DCMTK for the same reason
+      # (CMakeExternals/zlib.cmake, ITK.cmake, DCMTK.cmake). The prefix is kept so this copy
+      # cannot clash with any system zlib pulled in transitively.
+      - name: Build zlib
+        id: build-zlib
+        if: steps.check-zlib.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          deps="${{ runner.temp }}/deps"
+          mkdir -p "$deps/src" && cd "$deps/src"
+          curl -fsSL -o zlib.tar.gz \
+            "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIBNG_VERSION}.tar.gz"
+          tar xzf zlib.tar.gz
+          cmake -S "$deps/src/zlib-ng-${ZLIBNG_VERSION}" -B "$deps/build-zlib" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$deps/zlib" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=ON \
+            -DZLIB_SYMBOL_PREFIX=plm_zlib_ \
+            -DZLIB_ENABLE_TESTS=OFF \
+            -DWITH_GTEST=OFF
+          cmake --build "$deps/build-zlib" --target install
+
+      - name: Save zlib cache
+        if: ${{ !cancelled() && steps.build-zlib.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/deps/zlib
+          key: ${{ steps.cache-zlib.outputs.cache-primary-key }}
 
       ##------------------------------------------------------------------------------
       ##  ITK
@@ -118,6 +178,8 @@ jobs:
           curl -fsSL -o itk.tar.gz \
             "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v${ITK_VERSION}/InsightToolkit-${ITK_VERSION}.tar.gz"
           tar xzf itk.tar.gz
+          zlib_lib=$(find "$deps/zlib/lib" -name 'lib*.a' -print -quit)
+          echo "ZLIB_LIBRARY=$zlib_lib"
           cmake -S "$deps/src/InsightToolkit-${ITK_VERSION}" -B "$deps/build-itk" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$deps/itk" \
@@ -125,9 +187,19 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DBUILD_EXAMPLES=OFF \
-            -DITK_USE_SYSTEM_ZLIB=OFF \
+            -DITK_USE_SYSTEM_ZLIB=ON \
+            -DZLIB_ROOT="$deps/zlib" \
+            -DZLIB_INCLUDE_DIR="$deps/zlib/include" \
+            -DZLIB_LIBRARY="$zlib_lib" \
             -DModule_ITKReview=ON
           cmake --build "$deps/build-itk" --target install
+          # Guard the regression that cost a full CI round: if ITK ever builds its own zlib
+          # again, its internals (deflateInit2, inflateInit2, ...) collide with ours at link
+          # time. Catch it here, next to the cause, rather than in a link error much later.
+          if ls "$deps"/itk/lib/libitkzlib* >/dev/null 2>&1; then
+            echo "::error::ITK built its own zlib despite ITK_USE_SYSTEM_ZLIB=ON -- it will collide with the shared zlib"
+            exit 1
+          fi
 
       # Saved as soon as ITK itself is installed, so a later DCMTK/dlib/plastimatch failure
       # does not throw this build away. `cmake --build --target install` returning 0 means
@@ -141,59 +213,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/deps/itk
           key: ${{ steps.cache-itk.outputs.cache-primary-key }}
-
-      ##------------------------------------------------------------------------------
-      ##  zlib (zlib-ng in zlib-compatible mode)
-      ##------------------------------------------------------------------------------
-      - name: Restore zlib cache
-        id: cache-zlib
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ runner.temp }}/deps/zlib
-          key: linux-x86_64-zlib-${{ env.ZLIB_CACHE_EPOCH }}-${{ env.ZLIBNG_VERSION }}
-
-      - name: Check zlib cache
-        id: check-zlib
-        run: |
-          ok=false
-          if [ "${{ steps.cache-zlib.outputs.cache-hit }}" == "true" ] \
-             && ls "${{ runner.temp }}"/deps/zlib/lib/lib*.a >/dev/null 2>&1; then
-            ok=true
-          fi
-          echo "ok=$ok" >> "$GITHUB_OUTPUT"
-          echo "Usable zlib cache: $ok"
-
-      # zlib-ng in ZLIB_COMPAT mode provides the classic zlib API that DCMTK expects.
-      # ZLIB_SYMBOL_PREFIX is the important part: ITK links its own bundled zlib into the
-      # same executable, so without a prefix the two copies would collide at link time.
-      # (This mirrors what dcmqi does in CMakeExternals/zlib.cmake.)
-      - name: Build zlib
-        id: build-zlib
-        if: steps.check-zlib.outputs.ok != 'true'
-        run: |
-          set -euo pipefail
-          deps="${{ runner.temp }}/deps"
-          mkdir -p "$deps/src" && cd "$deps/src"
-          curl -fsSL -o zlib.tar.gz \
-            "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIBNG_VERSION}.tar.gz"
-          tar xzf zlib.tar.gz
-          cmake -S "$deps/src/zlib-ng-${ZLIBNG_VERSION}" -B "$deps/build-zlib" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$deps/zlib" \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DZLIB_COMPAT=ON \
-            -DZLIB_SYMBOL_PREFIX=plm_zlib_ \
-            -DZLIB_ENABLE_TESTS=OFF \
-            -DWITH_GTEST=OFF
-          cmake --build "$deps/build-zlib" --target install
-
-      - name: Save zlib cache
-        if: ${{ !cancelled() && steps.build-zlib.outcome == 'success' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ runner.temp }}/deps/zlib
-          key: ${{ steps.cache-zlib.outputs.cache-primary-key }}
 
       ##------------------------------------------------------------------------------
       ##  DCMTK

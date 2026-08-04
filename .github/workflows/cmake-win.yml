@@ -35,7 +35,7 @@ env:
   # Per-dependency cache epochs. Because each dependency has its own cache entry, bumping
   # one rebuilds only that dependency -- useful after changing its cmake options, which are
   # not themselves part of the cache key.
-  ITK_CACHE_EPOCH: v2
+  ITK_CACHE_EPOCH: v3
   ZLIB_CACHE_EPOCH: v1
   DCMTK_CACHE_EPOCH: v6
   DLIB_CACHE_EPOCH: v3
@@ -60,6 +60,68 @@ jobs:
         with:
           vs-version: '17'
           msbuild-architecture: x64
+
+      ##------------------------------------------------------------------------------
+      ##  zlib (zlib-ng in zlib-compatible mode)
+      ##------------------------------------------------------------------------------
+      - name: Restore zlib cache
+        id: cache-zlib
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}\deps\zlib
+          key: windows-x64-zlib-${{ env.ZLIB_CACHE_EPOCH }}-${{ env.ZLIBNG_VERSION }}
+
+      - name: Check zlib cache
+        id: check-zlib
+        shell: bash
+        run: |
+          ok=false
+          if [ "${{ steps.cache-zlib.outputs.cache-hit }}" == "true" ] \
+             && ls "$RUNNER_TEMP"/deps/zlib/lib/*.lib >/dev/null 2>&1; then
+            ok=true
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "Usable zlib cache: $ok"
+
+      # zlib-ng in ZLIB_COMPAT mode provides the classic zlib API that DCMTK expects.
+      #
+      # This one build is shared by both ITK and DCMTK, which is mandatory rather than tidy.
+      # ITK 5.4 bundles zlib-ng too, and a second copy in the same executable collides:
+      # ZLIB_SYMBOL_PREFIX renames only the documented public API, leaving ~85 internal
+      # symbols unprefixed -- including deflateInit2 and inflateInit2, which is exactly what
+      # the linker rejected ("multiple definition of `deflateInit2'; libitkzlib-5.4.a"). So
+      # ITK is pointed at this zlib with ITK_USE_SYSTEM_ZLIB=ON and never builds its own.
+      # dcmqi shares a single zlib across ITK and DCMTK for the same reason
+      # (CMakeExternals/zlib.cmake, ITK.cmake, DCMTK.cmake). The prefix is kept so this copy
+      # cannot clash with any system zlib pulled in transitively.
+      - name: Build zlib
+        id: build-zlib
+        if: steps.check-zlib.outputs.ok != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deps = "$env:RUNNER_TEMP\deps"
+          New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
+          Set-Location "$deps\src"
+          Invoke-WebRequest -Uri "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/$env:ZLIBNG_VERSION.tar.gz" -OutFile zlib.tar.gz
+          tar xzf zlib.tar.gz
+          cmake -S "$deps\src\zlib-ng-$env:ZLIBNG_VERSION" -B "$deps\build-zlib" -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_INSTALL_PREFIX=$deps\zlib" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DZLIB_COMPAT=ON `
+            -DZLIB_SYMBOL_PREFIX=plm_zlib_ `
+            -DZLIB_ENABLE_TESTS=OFF `
+            -DWITH_GTEST=OFF
+          if ($LASTEXITCODE -ne 0) { throw "zlib configure failed" }
+          cmake --build "$deps\build-zlib" --config Release --target INSTALL -- /m
+          if ($LASTEXITCODE -ne 0) { throw "zlib build failed" }
+
+      - name: Save zlib cache
+        if: ${{ !cancelled() && steps.build-zlib.outcome == 'success' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}\deps\zlib
+          key: ${{ steps.cache-zlib.outputs.cache-primary-key }}
 
       ##------------------------------------------------------------------------------
       ##  ITK
@@ -96,16 +158,30 @@ jobs:
           Set-Location "$deps\src"
           Invoke-WebRequest -Uri "https://github.com/InsightSoftwareConsortium/ITK/releases/download/v$env:ITK_VERSION/InsightToolkit-$env:ITK_VERSION.tar.gz" -OutFile itk.tar.gz
           tar xzf itk.tar.gz
+          # Forward slashes on purpose: these paths get embedded into generated CMake code,
+          # where a Windows path fails to parse ("Invalid character escape '\a'" on D:\a\...).
+          $zlibRoot = "$deps\zlib" -replace '\\','/'
+          $zlibLib = ((Get-ChildItem -Path "$deps\zlib\lib" -Filter *.lib | Select-Object -First 1).FullName) -replace '\\','/'
+          Write-Host "ZLIB_LIBRARY=$zlibLib"
           cmake -S "$deps\src\InsightToolkit-$env:ITK_VERSION" -B "$deps\build-itk" -G "Visual Studio 17 2022" -A x64 `
             "-DCMAKE_INSTALL_PREFIX=$deps\itk" `
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_TESTING=OFF `
             -DBUILD_EXAMPLES=OFF `
-            -DITK_USE_SYSTEM_ZLIB=OFF `
+            -DITK_USE_SYSTEM_ZLIB=ON `
+            "-DZLIB_ROOT=$zlibRoot" `
+            "-DZLIB_INCLUDE_DIR=$zlibRoot/include" `
+            "-DZLIB_LIBRARY=$zlibLib" `
             -DModule_ITKReview=ON
           if ($LASTEXITCODE -ne 0) { throw "ITK configure failed" }
           cmake --build "$deps\build-itk" --config Release --target INSTALL -- /m
           if ($LASTEXITCODE -ne 0) { throw "ITK build failed" }
+          # Guard the regression that cost a full CI round: if ITK ever builds its own zlib
+          # again, its internals (deflateInit2, inflateInit2, ...) collide with ours at link
+          # time. Catch it here, next to the cause, rather than in a link error much later.
+          if (Get-ChildItem -Path "$deps\itk\lib" -Filter 'itkzlib*' -ErrorAction SilentlyContinue) {
+            throw "ITK built its own zlib despite ITK_USE_SYSTEM_ZLIB=ON -- it will collide with the shared zlib"
+          }
 
       # Saved as soon as ITK itself is installed, so a later DCMTK/dlib/plastimatch failure
       # does not throw this build away. `cmake --build --target INSTALL` returning 0 means
@@ -119,61 +195,6 @@ jobs:
         with:
           path: ${{ runner.temp }}\deps\itk
           key: ${{ steps.cache-itk.outputs.cache-primary-key }}
-
-      ##------------------------------------------------------------------------------
-      ##  zlib (zlib-ng in zlib-compatible mode)
-      ##------------------------------------------------------------------------------
-      - name: Restore zlib cache
-        id: cache-zlib
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ runner.temp }}\deps\zlib
-          key: windows-x64-zlib-${{ env.ZLIB_CACHE_EPOCH }}-${{ env.ZLIBNG_VERSION }}
-
-      - name: Check zlib cache
-        id: check-zlib
-        shell: bash
-        run: |
-          ok=false
-          if [ "${{ steps.cache-zlib.outputs.cache-hit }}" == "true" ] \
-             && ls "$RUNNER_TEMP"/deps/zlib/lib/*.lib >/dev/null 2>&1; then
-            ok=true
-          fi
-          echo "ok=$ok" >> "$GITHUB_OUTPUT"
-          echo "Usable zlib cache: $ok"
-
-      # zlib-ng in ZLIB_COMPAT mode provides the classic zlib API that DCMTK expects.
-      # ZLIB_SYMBOL_PREFIX is the important part: ITK links its own bundled zlib into the
-      # same executable, so without a prefix the two copies would collide at link time.
-      # (This mirrors what dcmqi does in CMakeExternals/zlib.cmake.)
-      - name: Build zlib
-        id: build-zlib
-        if: steps.check-zlib.outputs.ok != 'true'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $deps = "$env:RUNNER_TEMP\deps"
-          New-Item -ItemType Directory -Force -Path "$deps\src" | Out-Null
-          Set-Location "$deps\src"
-          Invoke-WebRequest -Uri "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/$env:ZLIBNG_VERSION.tar.gz" -OutFile zlib.tar.gz
-          tar xzf zlib.tar.gz
-          cmake -S "$deps\src\zlib-ng-$env:ZLIBNG_VERSION" -B "$deps\build-zlib" -G "Visual Studio 17 2022" -A x64 `
-            "-DCMAKE_INSTALL_PREFIX=$deps\zlib" `
-            -DBUILD_SHARED_LIBS=OFF `
-            -DZLIB_COMPAT=ON `
-            -DZLIB_SYMBOL_PREFIX=plm_zlib_ `
-            -DZLIB_ENABLE_TESTS=OFF `
-            -DWITH_GTEST=OFF
-          if ($LASTEXITCODE -ne 0) { throw "zlib configure failed" }
-          cmake --build "$deps\build-zlib" --config Release --target INSTALL -- /m
-          if ($LASTEXITCODE -ne 0) { throw "zlib build failed" }
-
-      - name: Save zlib cache
-        if: ${{ !cancelled() && steps.build-zlib.outcome == 'success' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ runner.temp }}\deps\zlib
-          key: ${{ steps.cache-zlib.outputs.cache-primary-key }}
 
       ##------------------------------------------------------------------------------
       ##  DCMTK
@@ -252,7 +273,11 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/DCMTK/dcmtk/archive/refs/tags/DCMTK-$env:DCMTK_VERSION.tar.gz" -OutFile dcmtk.tar.gz
           tar xzf dcmtk.tar.gz
           # zlib-ng's static library name varies by platform and config, so locate it.
-          $zlibLib = (Get-ChildItem -Path "$deps\zlib\lib" -Filter *.lib | Select-Object -First 1).FullName
+          # Forward slashes on purpose: DCMTK's CMake/dcmtkMacros.cmake embeds this path into
+          # generated CMake code, where a Windows path fails to parse with
+          # "Invalid character escape '\a'" on D:\a\_temp\... .
+          $zlibRoot = "$deps\zlib" -replace '\\','/'
+          $zlibLib = ((Get-ChildItem -Path "$deps\zlib\lib" -Filter *.lib | Select-Object -First 1).FullName) -replace '\\','/'
           Write-Host "ZLIB_LIBRARY=$zlibLib"
           cmake -S "$deps\src\dcmtk-DCMTK-$env:DCMTK_VERSION" -B "$deps\build-dcmtk" -G "Visual Studio 17 2022" -A x64 `
             "-DCMAKE_INSTALL_PREFIX=$deps\dcmtk" `
@@ -264,8 +289,8 @@ jobs:
             -DDCMTK_COMPILE_WIN32_MULTITHREADED_DLL=ON `
             -DDCMTK_WITH_ZLIB=ON `
             -DDCMTK_USE_FIND_PACKAGE=ON `
-            "-DZLIB_ROOT=$deps\zlib" `
-            "-DZLIB_INCLUDE_DIR=$deps\zlib\include" `
+            "-DZLIB_ROOT=$zlibRoot" `
+            "-DZLIB_INCLUDE_DIR=$zlibRoot/include" `
             "-DZLIB_LIBRARY=$zlibLib" `
             -DDCMTK_WITH_OPENSSL=OFF `
             -DDCMTK_WITH_PNG=OFF `
